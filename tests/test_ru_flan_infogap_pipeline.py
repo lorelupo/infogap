@@ -6,7 +6,7 @@ from packages.steps.reductions import reduce_info_gaps, reduce_caa_classificatio
 import ipdb
 from collections import OrderedDict
 import pytest
-from flowmason import conduct, load_artifact, load_artifact_with_step_name, MapReduceStep
+from flowmason.flowmason import conduct, load_artifact, load_artifact_with_step_name, MapReduceStep
 
 @pytest.fixture
 def metadata_tc():

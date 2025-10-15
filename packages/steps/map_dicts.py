@@ -1,7 +1,7 @@
 import pandas as pd
 import polars as pl
 import ipdb
-from flowmason.flowmason import SingletonStep
+from flowmason import SingletonStep
 from packages.info_diff_caa import step_forced_align_facts_to_paragraph, step_forced_align_en_tgt_facts_to_paragraph 
 from packages.steps.caa_steps import step_prep_for_caa, step_caa_multi_sentence, step_infer_pronoun, step_prep_for_caa_en_tgt, step_caa_multi_sentence_en_tgt, step_caa_multi_sentence_flan
 from packages.constants import EVENT_SAVE_DIR, TGT_LANG

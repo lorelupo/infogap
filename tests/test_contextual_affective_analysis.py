@@ -1,7 +1,7 @@
 import polars as pl
 import ipdb
 import pytest
-from flowmason import conduct, SingletonStep, load_artifact_with_step_name
+from flowmason.flowmason import conduct, SingletonStep, load_artifact_with_step_name
 from packages.steps.map_dicts import get_en_fr_info_diff_map_dict, get_en_caa_classification_map_dict
 
 @pytest.fixture

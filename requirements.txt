@@ -23,7 +23,7 @@ exceptiongroup==1.2.2
 executing==2.1.0
 fake-useragent==2.0.3
 filelock==3.16.1
--e git+https://github.com/smfsamir/flowmason@5398a670ff138494eba7e6647e9a22ce36b9a16b#egg=flowmason
+-e git+https://github.com/smfsamir/flowmason@c990a5bcfe35b0fbc499ecf2d45a91280b3e8506#egg=flowmason
 fonttools==4.56.0
 fsspec==2024.12.0
 h11==0.14.0
@@ -58,7 +58,7 @@ mwparserfromhell==0.6.6
 nest-asyncio==1.6.0
 networkx==3.2.1
 nltk==3.9.1
-numpy==2.0.2
+numpy==1.26.4
 openai==1.59.7
 packaging==24.2
 pandas==2.2.3
@@ -107,7 +107,7 @@ tomli==2.2.1
 torch==2.5.1
 torchvision==0.20.1
 tornado==6.4.2
-tqdm==4.31.1
+tqdm==4.66.5
 traitlets==5.14.3
 transformers==4.29.0
 typing_extensions==4.12.2

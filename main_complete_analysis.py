@@ -28,6 +28,28 @@ from packages.flan_query import ask_flan_about_fact_intersection, ask_mt5_about_
 from packages.constants import NUM_CONTEXT_SRC, NUM_CONTEXT_TGT, NUM_RETRIEVALS, SCRATCH_DIR, CURRENT_EN_BIO_IDS, CURRENT_FR_BIO_IDS, CURRENT_PERSON_NAMES, ANNOTATION_SAVE_PATH, EN_FR_BIO_NAME_CSVS,\
     EN_RU_BIO_NAME_CSV, TGT_LANG
 
+# Torch 2.4+ emits a warning because the default of `weights_only` in torch.load
+# will change from False to True. We monkey-patch torch.load to default to
+# weights_only=True while remaining backward compatible with older torch
+# versions that do not recognise the kwarg. This keeps third-party libraries
+# like sentence-transformers quiet without changing their call sites.
+
+if torch is not None and not getattr(torch.load, "__wrapped_weights_only__", False):
+    _original_torch_load = torch.load
+
+    def _torch_load_weights_only(*args, **kwargs):
+        if "weights_only" not in kwargs:
+            kwargs["weights_only"] = True
+        try:
+            return _original_torch_load(*args, **kwargs)
+        except TypeError:
+            # Older torch versions (<2.1) don't accept the weights_only kwarg.
+            kwargs.pop("weights_only", None)
+            return _original_torch_load(*args, **kwargs)
+
+    _torch_load_weights_only.__wrapped_weights_only__ = True  # sentinel
+    torch.load = _torch_load_weights_only
+
 
     
 try:
@@ -156,6 +178,8 @@ def  step_annotate_complete_tgt(annotation_frame: pl.DataFrame,
     # get today's date in form MM-DD
     # today_str= "03-06"
     today = datetime.today().date()
+    annotation_dir = os.path.join(ANNOTATION_SAVE_PATH, "wikigap_data")
+    os.makedirs(annotation_dir, exist_ok=True)
     load_save_if_nexists(annotation_frame, f"{ANNOTATION_SAVE_PATH}/wikigap_data/annotation_{today}_{kwargs['topic']}_{kwargs['tgt_lang']}.json")
 
     # load_save_if_nexists(annotation_frame, f"{ANNOTATION_SAVE_PATH}/annotation_{today}_{kwargs['topic']}_{kwargs['tgt_lang']}.json")

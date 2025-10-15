@@ -6,7 +6,7 @@ import polars as pl
 from typing import List
 from tqdm import tqdm
 from collections import OrderedDict
-from flowmason.flowmason import SingletonStep, MapReduceStep
+from flowmason import SingletonStep, MapReduceStep
 from .constants import HF_CACHE_DIR
 from sentence_transformers import SentenceTransformer
 from nltk import sent_tokenize

@@ -186,17 +186,35 @@ def write_gpt_fact_cache(person_name, lang_code, fact_cache):
 #     return client
 
 def load_other_client():
-    # Load configuration from .env
+    """Return an LLM client configured from environment settings.
+
+    Preference order:
+    1. OpenRouter (``OPENROUTER_KEY`` and ``OPENROUTER_URL``).
+    2. Explicit OpenAI settings (``OPENAI_API_KEY`` and optional ``OPENAI_BASE_URL``).
+    3. Legacy ``THE_KEY`` value.
+    """
+
     config = dotenv_values(".env")
-    
-    # Get the API key from the .env file
-    api_key = config.get('THE_KEY')
+
+    openrouter_key = config.get("OPENROUTER_KEY")
+    openrouter_url = config.get("OPENROUTER_URL")
+    if openrouter_key and openrouter_url:
+        default_headers = {
+            "HTTP-Referer": config.get("OPENROUTER_REFERER", "https://infogap"),
+            "X-Title": config.get("OPENROUTER_APP_NAME", "InfoGap Pipeline"),
+        }
+        return OpenAI(
+            api_key=openrouter_key,
+            base_url=openrouter_url,
+            default_headers=default_headers,
+        )
+
+    api_key = config.get("OPENAI_API_KEY") or config.get("THE_KEY")
     if not api_key:
-        raise ValueError("Missing THE_KEY in .env file")
-    
-    # Initialize the Azure OpenAI client
-    client = OpenAI(api_key=api_key)
-    return client
+        raise ValueError("Missing OPENAI_API_KEY or THE_KEY in .env file")
+
+    base_url = config.get("OPENAI_BASE_URL")
+    return OpenAI(api_key=api_key, base_url=base_url)
 
 def extract_fact_decomp_list(response: str) -> List[str]:
     if '```' in response:
@@ -595,12 +613,12 @@ def _compute_info_gap(src_fact_df, tgt_fact_df, alignment_df: pl.DataFrame,
                     (tgt_sub_fact_df['fact_index'][int(matched_fact_inds[i,j])],
                     margin_matrix_forward[i, matched_fact_inds[i,j]])
                 )
-    # pl.col('fact_index').map_elements(lambda index: info_intersection_mapping[index]).alias('info_intersection_mapping')
-    # use the info_intersection_mapping if the fact index is in the info_intersection_inds, otherwise set to 'not in info intersection'
-    src_fact_df = src_fact_df.with_columns([
-        pl.col('fact_index').map_elements(lambda index: info_intersection_mapping[index])\
-            .alias('info_retrieval_mapping')
-    ])
+    mapping_dict = {index: matches for index, matches in info_intersection_mapping.items()}
+    src_fact_df = src_fact_df.with_columns(
+        pl.col('fact_index')
+        .map_dict(mapping_dict, default=[])
+        .alias('info_retrieval_mapping')
+    )
     return src_fact_df
 
 def step_retrieve_potential_matches( en_bio_id: str, fr_bio_id: str,

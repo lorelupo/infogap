@@ -1,5 +1,5 @@
 import pytest
-from flowmason import conduct, load_artifact, load_artifact_with_step_name
+from flowmason.flowmason import conduct, load_artifact, load_artifact_with_step_name
 import ipdb
 from wikipedia_edit_scrape_tool import get_text, Header, Paragraph 
 

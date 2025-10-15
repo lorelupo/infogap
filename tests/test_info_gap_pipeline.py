@@ -5,7 +5,7 @@ from nltk import sent_tokenize
 import pytest
 from functools import partial
 import ipdb
-from flowmason import conduct, SingletonStep, load_artifact, load_artifact, load_artifact_with_step_name
+from flowmason.flowmason import conduct, SingletonStep, load_artifact, load_artifact, load_artifact_with_step_name
 from packages.steps.map_dicts import get_en_fr_info_diff_map_dict
 from packages.steps.info_diff_steps import step_retrieve_en_content_blocks, step_generate_facts, step_compute_info_gap_reasoning, step_retrieve_fr_content_blocks
 from packages.gpt_query import ask_gpt_about_fact_intersection

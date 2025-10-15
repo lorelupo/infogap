@@ -1,7 +1,5 @@
 selected_topics = [ 
-"Philippine adobo",
-"Wiener schnitzel",
-"Paella",
-"Peking duck",
-"Injera"
+"Snow Leopard Trust",
+"German submarine V-80",
+"Victoire Du Bois"
 ]

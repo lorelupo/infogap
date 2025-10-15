@@ -501,7 +501,7 @@ def main():
       4) Collect all rows, convert to nested JSON, write out.
     """
     # Example placeholders
-    TARGET_LANGUAGES = ['ru', 'fr', 'zh']
+    TARGET_LANGUAGES = ['fr']
     json_directory = "scratch/ethics_annotation_save/wikigap_data"
     output_csv = "wikigap_data_temp.csv"
     target_names = {

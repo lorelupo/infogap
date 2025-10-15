@@ -2,7 +2,7 @@ import ipdb
 import pytest
 from collections import OrderedDict
 
-from flowmason import conduct, SingletonStep, load_artifact, load_artifact, load_artifact_with_step_name, MapReduceStep
+from flowmason.flowmason import conduct, SingletonStep, load_artifact, load_artifact, load_artifact_with_step_name, MapReduceStep
 
 from packages.steps.map_dicts import get_en_ru_gpt_info_diff_map_dict, get_caa_map_dict_gpt, get_caa_map_dict_flan_ru
 from packages.steps.reductions import reduce_info_gaps, reduce_caa_classifications
