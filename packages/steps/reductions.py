@@ -34,14 +34,14 @@ def reduce_paragraph_ablation(abln_info_gap_dfs: List[pl.DataFrame]):
     Columns: 
         - src_contexts: List[str]
         - tgt_contexts: List[List[str]]
-        - gpt-4_intersection_label: str
+        - gpt-4o_intersection_label: str
         - language: str
         - person_name: str
     """
     all_people_info_gap_frame = pl.concat(abln_info_gap_dfs)
-    # rename the 'gpt-4_intersection_label' column to 'gpt-4_paragraph_abln_label'
+    # rename the 'gpt-4o_intersection_label' column to 'gpt-4_paragraph_abln_label'
     all_people_info_gap_frame = all_people_info_gap_frame.with_columns([
-        pl.col('gpt-4_intersection_label').alias('gpt-4_paragraph_abln_label')
+        pl.col('gpt-4o_intersection_label').alias('gpt-4_paragraph_abln_label')
     ])
     return all_people_info_gap_frame
 

@@ -62,14 +62,14 @@ def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=N
 
     map_reduce_dict['step_reasoning_intersection_label'] = SingletonStep(step_compute_info_gap_reasoning, {
         'version': '006',
-        'model_name': 'gpt-4o',
+        'model_name': 'gpt-5-mini',
         'lang_code': tgt_lang,
         'info_gap_retrieval_dfs': 'step_find_retrieval_candidates',
         **person_name_dict
     })
     map_reduce_dict['step_collapse_gpt_labels'] = SingletonStep(step_collapse_gpt_labels, {
         'version': '002',
-        'model_intersection_names': ('gpt-4o',), 
+        'model_intersection_names': ('gpt-5-mini',), 
         'gpt_info_gap_dfs': 'step_reasoning_intersection_label'
     })
     # TODO: this has to be updated since we pass content blocks (possibly containing headers) rather than paragraphs

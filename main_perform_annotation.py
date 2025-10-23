@@ -21,7 +21,7 @@ TGT_LANG_CODE = "ko"
     ## If the fact is not present in the article, answer 'E'.
 ## It is up to your discretion to decide whether a fact is "mostly" present in the snippets or the article.
 
-ANNOTATION_FNAME = "/Users/anniewang/Desktop/infogap/scratch/ethics_annotation_save/annotation_2025-02-17_Sundae (sausage).json" # TODO: set to whatever directory you want to save the annotations to
+ANNOTATION_FNAME = "/Users/llupo/dev/infogap/scratch/annotation_save/annotation_2025-02-17_Sundae (sausage).json" # TODO: set to whatever directory you want to save the annotations to
 frame = pl.read_json(ANNOTATION_FNAME)
 en_link = "https://en.wikipedia.org/wiki/Sundae_(sausage)"
 tgt_link = "https://ko.wikipedia.org/wiki/%EC%88%9C%EB%8C%80"

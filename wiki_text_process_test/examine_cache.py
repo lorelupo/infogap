@@ -69,7 +69,7 @@ def display_cache_as_table(result):
 
 
 # Example usage:
-cache_directory = "/Users/anniewang/Desktop/infogap/scratch/full_cache_gpt_en_zh/"  # Change this to your actual cache directory
+cache_directory = "/Users/llupo/dev/infogap/scratch/full_cache_gpt_en_zh/"  # Change this to your actual cache directory
 cache_name = "9c6b24f5f9c3abf10d6c32902a4f82bc8bd17cb939651c5049de7504d7af0e3c"
 
 result = examine_cache_result(cache_directory, cache_name)

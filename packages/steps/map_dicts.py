@@ -156,14 +156,14 @@ def get_en_fr_info_diff_map_dict(en_bio_id=None, fr_bio_id=None, person_name=Non
 
 #     map_reduce_dict['step_reasoning_intersection_label'] = SingletonStep(step_compute_info_gap_reasoning, {
 #         'version': '006',
-#         'model_name': 'gpt-4o',
+#         'model_name': 'gpt-5-mini',
 #         'lang_code': 'zh',
 #         'info_gap_retrieval_dfs': 'step_find_retrieval_candidates',
 #         **person_name_dict
 #     })
 #     map_reduce_dict['step_collapse_gpt_labels'] = SingletonStep(step_collapse_gpt_labels, {
 #         'version': '002',
-#         'model_intersection_names': ('gpt-4o',), 
+#         'model_intersection_names': ('gpt-5-mini',), 
 #         'gpt_info_gap_dfs': 'step_reasoning_intersection_label'
 #     })
 #     # TODO: this has to be updated since we pass content blocks (possibly containing headers) rather than paragraphs
@@ -183,7 +183,7 @@ def get_en_zh_info_diff_map_dict(en_bio_id=None, zh_bio_id=None, person_name=Non
     ## English
     en_bio_id_dict = {'en_bio_id': en_bio_id} if en_bio_id else {}
     zh_bio_id_dict = {'tgt_bio_id': zh_bio_id} if zh_bio_id else {}
-    person_name_dict = {'person_name': person_name, 'tgt_person_name': zh_person_name} if person_name else {}
+    person_name_dict = {'person_name': person_name, 'tgt_person_name': tgt_person_name} if person_name else {}
     print(zh_bio_id_dict)
     map_reduce_dict['step_get_en_content_blocks'] = SingletonStep(step_retrieve_prescraped_en_content_blocks, { # in info diff steps
         'version': '003', 
@@ -237,14 +237,14 @@ def get_en_zh_info_diff_map_dict(en_bio_id=None, zh_bio_id=None, person_name=Non
 
     map_reduce_dict['step_reasoning_intersection_label'] = SingletonStep(step_compute_info_gap_reasoning, {
         'version': '006',
-        'model_name': 'gpt-4o',
+        'model_name': 'gpt-5-mini',
         'lang_code': 'zh',
         'info_gap_retrieval_dfs': 'step_find_retrieval_candidates',
         **person_name_dict
     })
     map_reduce_dict['step_collapse_gpt_labels'] = SingletonStep(step_collapse_gpt_labels, {
         'version': '002',
-        'model_intersection_names': ('gpt-4o',), 
+        'model_intersection_names': ('gpt-5-mini',), 
         'gpt_info_gap_dfs': 'step_reasoning_intersection_label'
     })
     # TODO: this has to be updated since we pass content blocks (possibly containing headers) rather than paragraphs
@@ -260,7 +260,7 @@ def get_en_zh_info_diff_map_dict(en_bio_id=None, zh_bio_id=None, person_name=Non
 
 
 
-def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=None, tgt_person_name=None, tgt_lang=None):
+def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=None, tgt_person_name=None, tgt_lang=None, model_name: str = 'gpt-5-mini'):
     map_reduce_dict = OrderedDict()
 
     ## English
@@ -283,12 +283,14 @@ def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=N
     map_reduce_dict['step_generate_facts'] = SingletonStep(step_generate_facts, { # in info diff steps
         'version': '003',
         'lang_code': 'en',
+        'model_name': model_name,
         'content_blocks': 'step_get_en_content_blocks', 
         **person_name_dict
     })
     map_reduce_dict['step_generate_facts_tgt'] = SingletonStep(step_generate_facts, { # in info diff steps
         'version': '002',
-        'lang_code': tgt_lang, 
+        'lang_code': tgt_lang,
+        'model_name': model_name,
         'content_blocks': 'step_get_tgt_content_blocks', 
         **person_name_dict
     })
@@ -318,14 +320,14 @@ def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=N
     })
     map_reduce_dict['step_reasoning_intersection_label'] = SingletonStep(step_compute_info_gap_reasoning, {
         'version': '006',
-        'model_name': 'gpt-4o',
+        'model_name': model_name,
         'lang_code': tgt_lang,
         'info_gap_retrieval_dfs': 'step_find_retrieval_candidates',
         **person_name_dict
     })
     map_reduce_dict['step_collapse_gpt_labels'] = SingletonStep(step_collapse_gpt_labels, {
         'version': '002',
-        'model_intersection_names': ('gpt-4o',), 
+        'model_intersection_names': (model_name,), 
         'gpt_info_gap_dfs': 'step_reasoning_intersection_label'
     })
     # TODO: this has to be updated since we pass content blocks (possibly containing headers) rather than paragraphs
@@ -460,7 +462,7 @@ def get_caa_map_dict_gpt():
     map_reduce_dict = OrderedDict()
     map_reduce_dict['step_prep_for_caa'] = SingletonStep(step_prep_for_caa_en_tgt, {
         'version': '001', 
-        'intersection_column': 'gpt4v_intersection_label',
+        'intersection_column': 'gpt-4o_intersection_label',
         'tgt_lang_code': 'ru'
     })
     map_reduce_dict['step_compute_caa_multi_sentence'] = SingletonStep(step_caa_multi_sentence_en_tgt, {
@@ -474,7 +476,7 @@ def get_caa_map_dict_gpt():
     map_reduce_dict = OrderedDict()
     map_reduce_dict['step_prep_for_caa'] = SingletonStep(step_prep_for_caa_en_tgt, {
         'version': '001', 
-        'intersection_column': 'gpt-4_intersection_label',
+        'intersection_column': 'gpt-4o_intersection_label',
         'tgt_lang_code': 'ru'
     })
     map_reduce_dict['step_compute_caa_multi_sentence'] = SingletonStep(step_caa_multi_sentence_en_tgt, {
@@ -517,7 +519,7 @@ def get_caa_map_dict_fr_gpt():
     map_reduce_dict = OrderedDict()
     map_reduce_dict['step_prep_for_caa'] = SingletonStep(step_prep_for_caa, {
         'version': '001', 
-        'intersection_column': 'gpt-4_intersection_label',
+        'intersection_column': 'gpt-4o_intersection_label',
         'tgt_lang_code': 'fr'
     })
     map_reduce_dict['step_compute_caa_multi_sentence'] = SingletonStep(step_caa_multi_sentence_en_tgt, {
@@ -544,13 +546,13 @@ def general_event_en_fr_map_dict():
     map_reduce_dict['step_generate_facts'] = SingletonStep(step_generate_facts, { # in info diff steps
         'version': '003',
         'lang_code': 'en',
-        'model_name': 'gpt-4o',
+        'model_name': 'gpt-5-mini',
         'content_blocks': 'step_get_en_content_blocks'
     })
     map_reduce_dict['step_generate_facts_fr'] = SingletonStep(step_generate_facts, { # in info diff steps
         'version': '002',
         'lang_code': 'fr', 
-        'model_name': 'gpt-4o',
+        'model_name': 'gpt-5-mini',
         'content_blocks': 'step_get_fr_content_blocks'
     })
     map_reduce_dict['step_align_fact_paragraphs'] = SingletonStep(step_obtain_paragraphs_associations, {
@@ -571,12 +573,12 @@ def general_event_en_fr_map_dict():
     # TODO: need to update the prompt here.
     map_reduce_dict['step_reasoning_intersection_label'] = SingletonStep(step_compute_info_gap_reasoning, {
         'version': '006',
-        'model_name': 'gpt-4o',
+        'model_name': 'gpt-5-mini',
         'info_gap_retrieval_dfs': 'step_find_retrieval_candidates'
     })
     map_reduce_dict['step_collapse_gpt_labels'] = SingletonStep(step_collapse_gpt_labels, {
         'version': '002',
-        'model_intersection_names': ('gpt-4o',), 
+        'model_intersection_names': ('gpt-5-mini',), 
         'gpt_info_gap_dfs': 'step_reasoning_intersection_label'
     })
     return map_reduce_dict

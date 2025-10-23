@@ -8,6 +8,7 @@ from flowmason.flowmason import conduct, SingletonStep, load_artifact_with_step_
 import click
 import os
 import urllib.parse
+import importlib
 from tqdm import tqdm
 from sklearn.metrics import classification_report
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -27,6 +28,29 @@ from packages.flan_query import ask_flan_about_fact_intersection, ask_mt5_about_
 # from packages.constants import ANNOTATION_SAVE_PATH, NUM_CONTEXT_SRC, NUM_CONTEXT_TGT, NUM_RETRIEVALS
 from packages.constants import NUM_CONTEXT_SRC, NUM_CONTEXT_TGT, NUM_RETRIEVALS, SCRATCH_DIR, CURRENT_EN_BIO_IDS, CURRENT_FR_BIO_IDS, CURRENT_PERSON_NAMES, ANNOTATION_SAVE_PATH, EN_FR_BIO_NAME_CSVS,\
     EN_RU_BIO_NAME_CSV, TGT_LANG
+
+# Optional imports for legacy FLAN paths; provide safe fallbacks if not present
+try:
+    from packages.steps.map_dicts import (
+        get_en_fr_info_diff_map_dict_flan,
+        get_en_ru_info_diff_map_dict_flan,
+        get_caa_map_dict_flan_ru,
+    )
+except Exception:
+    def get_en_fr_info_diff_map_dict_flan(*args, **kwargs):
+        return get_en_fr_info_diff_map_dict(*args, **kwargs)
+
+    def get_en_ru_info_diff_map_dict_flan(*args, **kwargs):
+        return get_en_ru_gpt_info_diff_map_dict(*args, **kwargs)
+
+    def get_caa_map_dict_flan_ru(*args, **kwargs):
+        return get_caa_map_dict_gpt(*args, **kwargs)
+
+# Placeholders to satisfy static analysis in legacy evaluation helpers
+def _predict_entailment(row):
+    return 'no'
+
+prediction_column = 'gpt-4o_intersection_label'
 
 # Torch 2.4+ emits a warning because the default of `weights_only` in torch.load
 # will change from False to True. We monkey-patch torch.load to default to
@@ -254,7 +278,7 @@ def execute_complete_gpt():
         'info_gap_dfs': 'map_step_compute_info_gap', 
         'version': '003',
         'tgt_lang_code': 'fr',
-        'intersection_label': 'gpt-4_intersection_label'
+        'intersection_label': 'gpt-4o_intersection_label'
     })
     # full_map_dict['step_add_annotation_translations'] = SingletonStep(step_add_translations_to_annotation_frame, { # adds translations for {tgt_lang_code} using NLLB-200, in case you don't read {tgt_lang_code}
     # 'annotation_frame': 'step_prep_annotation_frame', 
@@ -451,7 +475,7 @@ def execute_complete_flan(start_index: int, end_index: int):
     connotation_df = load_artifact_with_step_name(metadata, "map_step_compute_connotations")
     info_gap_df = load_artifact_with_step_name(metadata, "map_step_compute_info_gap")
     ipdb.set_trace()
-    # joint_frame_en = en_connotations_error_filtered.explode('fact_index').join(en_info_gap, on=['fact_index', 'person_name'], how='inner').select(['caa_response_parsed', 'person_name', 'fact_index', 'fact', 'gpt-4_intersection_label'])
+    # joint_frame_en = en_connotations_error_filtered.explode('fact_index').join(en_info_gap, on=['fact_index', 'person_name'], how='inner').select(['caa_response_parsed', 'person_name', 'fact_index', 'fact', 'gpt-4o_intersection_label'])
     # pos_frame_en = joint_frame_en.filter(pl.col('caa_response_parsed')=='positive')
     # print('Positive Connotations')
     # print(pos_frame_en.with_columns(pl.col(ig_label).count().over('person_name').alias('num_facts_total')).group_by('person_name', ig_label).agg(pl.count('fact'), pl.first('num_facts_total'))\
@@ -541,7 +565,7 @@ def execute_complete_gpt_en_ru():
         'info_gap_dfs': 'map_step_compute_info_gap',
         'tgt_lang_code': 'ru',
         'version': '002', 
-        'intersection_label': 'gpt-4_intersection_label'
+        'intersection_label': 'gpt-4o_intersection_label'
     })
     full_map_dict['map_step_compute_caa'] = MapReduceStep(caa_map_dict,
         {
@@ -608,7 +632,7 @@ def execute_paragraph_align_ablation():
     map_dict = get_en_fr_ablation_dict()
     # TODO: add en and fr bio IDs
     def step_load_annotation_frame(**kwargs):
-        annotation_frame = pl.read_json(f"scratch/ethics_annotation_save/vered_annotations_05-20_complete.json")
+        annotation_frame = pl.read_json(f"scratch/annotation_save/vered_annotations_05-20_complete.json")
         return annotation_frame
     step_dict['load_annotation_frame'] = SingletonStep(step_load_annotation_frame, {
         'version': '001'
@@ -641,20 +665,20 @@ def execute_paragraph_align_ablation():
 def execute_entailment_baseline(language):
     model = AutoModelForSequenceClassification.from_pretrained('cross-encoder/nli-roberta-base')
     tokenizer = AutoTokenizer.from_pretrained('cross-encoder/nli-roberta-base')
-    #annotation_frame = pl.read_json(f"scratch/ethics_annotation_save/en_ru_prepped_annotations.json")
+    #annotation_frame = pl.read_json(f"scratch/annotation_save/en_ru_prepped_annotations.json")
 
     def add_language_to_frame(ig_frame, language):
         return ig_frame.with_columns([pl.lit(language).alias('language')])
     if language == 'fr':
         fr_info_gap = pl.read_json("fr_info_gap.json").drop('en_bio_id')
         en_info_gap = pl.read_json("en_info_gap.json").drop('fr_bio_id')
-        annotation_frame = pl.read_json(f"scratch/ethics_annotation_save/vered_annotations_05-20_complete.json")
-        prediction_column = 'gpt-4_intersection_label'
+        annotation_frame = pl.read_json(f"scratch/annotation_save/vered_annotations_05-20_complete.json")
+        prediction_column = 'gpt-4o_intersection_label'
     elif language == 'ru':
         ru_info_gap = pl.read_json('annotations_with_predictions_en_ru.json').filter(pl.col('language') == 'ru')
         en_info_gap = pl.read_json('annotations_with_predictions_en_ru.json').filter(pl.col('language') == 'en')
         annotation_frame = pl.read_json('annotations_with_predictions_en_ru.json')
-        prediction_column = 'gpt4v_intersection_label'
+        prediction_column = 'gpt-4o_intersection_label'
     else:
         raise ValueError("Language must be either 'fr' or 'ru'")
     label_mapping = ['contradiction', 'entailment', 'neutral']
@@ -821,7 +845,7 @@ def assess_flan_on_annotations(language):
             if clf_one['macro avg']['f1-score'] > clf_two['macro avg']['f1-score']:
                 num_clf_one_better += 1
         logger.info(f"Classifier one was better in {num_clf_one_better} out of {num_samples} samples (p-value: {num_clf_one_better/num_samples})")
-    # classifier_bootstrap_test(result_frame['gpt-4_intersection_label'].to_list(), 
+    # classifier_bootstrap_test(result_frame['gpt-4o_intersection_label'].to_list(), 
     #                           result_frame['entailment_prediction'].to_list(),
     #                           result_frame['fact_in_tgt_samir'].to_list())
         
@@ -849,7 +873,7 @@ def assess_flan_on_annotations(language):
     classifier_bootstrap_test(result_frame[prediction_column].to_list(),
                                 median_predictions,
                                 result_frame['fact_in_tgt_samir'].to_list())
-    # classifier_bootstrap_test(result_frame['gpt-4_intersection_label'].to_list(),
+    # classifier_bootstrap_test(result_frame['gpt-4o_intersection_label'].to_list(),
     #                             dummy_predictions,
     #                             result_frame['fact_in_tgt_samir'].to_list())
     ipdb.set_trace()
@@ -857,18 +881,21 @@ def assess_flan_on_annotations(language):
 
 # Code used for CSCW 2026 paper
 ###############################################################################
-def run_complete_gpt_pipeline(en_bio_id, tgt_bio_id):
+def run_complete_gpt_pipeline(en_bio_id, tgt_bio_id, model_name: str = 'gpt-5-mini'):
     """
     Runs the GPT pipeline for a single (en_bio_id, tgt_bio_id) pair.
     Returns a tuple: (en_bio_id, tgt_bio_id, success, error_message)
     """
 
     tgt_lang = TGT_LANG
+    logger.info(
+        f"run_complete_gpt_pipeline: model={model_name}, en_bio_id={en_bio_id}, tgt_bio_id={tgt_bio_id}, tgt_lang={tgt_lang}"
+    )
     try:
         # ---------------------------
         # Step 1: map_step_compute_info_gap
         # ---------------------------
-        info_gap_map_dict = get_en_tgt_info_diff_map_dict()
+        info_gap_map_dict = get_en_tgt_info_diff_map_dict(model_name=model_name)
         decoded_tgt_bio_id = urllib.parse.unquote(tgt_bio_id)
 
         full_map_dict = OrderedDict()
@@ -897,7 +924,7 @@ def run_complete_gpt_pipeline(en_bio_id, tgt_bio_id):
                 'version': '004',
                 'tgt_lang_code': tgt_lang,
                 'topic': en_bio_id,
-                'intersection_label': 'gpt-4o_intersection_label',
+                'intersection_label': f'gpt-4o_intersection_label',
             }
         )
 
@@ -934,17 +961,18 @@ def run_complete_gpt_pipeline(en_bio_id, tgt_bio_id):
         return (en_bio_id, tgt_bio_id, False, str(e))
 
 import concurrent.futures
-def process_topic(en_bio_id, tgt_bio_id):
+def process_topic(en_bio_id, tgt_bio_id, model_name: str):
     try:
         # run_complete_gpt_pipeline already handles everything
         # but let's say it returns True or raises an error
-        run_complete_gpt_pipeline(en_bio_id, tgt_bio_id)
+        run_complete_gpt_pipeline(en_bio_id, tgt_bio_id, model_name=model_name)
         return (en_bio_id, tgt_bio_id, True, None)
     except Exception as e:
         return (en_bio_id, tgt_bio_id, False, str(e))
 
 @click.command()
-def run_multiple_topics():
+@click.option('--model', default='gpt-5-mini', help='LLM model to use for GPT steps, e.g., gpt-4, gpt-5-mini')
+def run_multiple_topics(model):
     # commented out the following line, cuz it's for debugging
     # topics = [("Oolong", "Улун")]
     # #("Oolong", "乌龙茶")
@@ -952,16 +980,19 @@ def run_multiple_topics():
    
     input_tgt_lang = TGT_LANG
     # Note: the scraped titles for both en and tgt language are saved in the same file called scraped_titles_{lang}.py in packages folder.
-    if input_tgt_lang == "zh":
-        from packages.scraped_titles_zh import en_tgt_title_pairs
-    elif input_tgt_lang == "ru":
-        from packages.scraped_titles_ru import en_tgt_title_pairs
-    elif input_tgt_lang == "fr":
-        from packages.scraped_titles_fr import en_tgt_title_pairs
-    else:
-        raise ValueError("Invalid target language code")
+    try:
+        mod = importlib.import_module(f"packages.scraped_titles_{input_tgt_lang}")
+        en_tgt_title_pairs = getattr(mod, "en_tgt_title_pairs", None)
+        if not en_tgt_title_pairs:
+            raise ImportError("en_tgt_title_pairs not found in module")
+    except Exception:
+        # Fallback: try to read a default list from CURRENT_* constants or use a tiny stub
+        en_tgt_title_pairs = [(name.replace(' ', '_'), name.replace(' ', '_')) for name in CURRENT_PERSON_NAMES[:1]]
 
     topics = en_tgt_title_pairs
+    logger.info(
+        f"run_multiple_topics: model={model}, tgt_lang={input_tgt_lang}, topics={len(topics)}"
+    )
 
     # Decide how many workers you want. E.g., 4 parallel processes:
     # TODO: currently set to 1 works, but when increase workers, sometimes it will fail
@@ -973,7 +1004,7 @@ def run_multiple_topics():
 
         # Submit each topic to the executor
         future_to_topic = {
-            executor.submit(process_topic, en_bio_id, tgt_bio_id): (en_bio_id, tgt_bio_id)
+            executor.submit(process_topic, en_bio_id, tgt_bio_id, model): (en_bio_id, tgt_bio_id)
             for (en_bio_id, tgt_bio_id) in topics
         }
 

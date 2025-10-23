@@ -10,7 +10,6 @@ from nltk.tokenize import wordpunct_tokenize
 from typing import Dict, List, Union
 from collections import defaultdict
 from functools import partial
-from dotenv import dotenv_values
 import loguru
 
 # from wikipedia_edit_scrape_tool import Paragraph, Header
@@ -21,17 +20,10 @@ from packages.constants import NUM_CONTEXT_CAA, GPT_CACHE_LOCATION, ANNOTATION_S
 from packages.steps.info_diff_steps import load_other_client
 
 logger = loguru.logger
-config = dotenv_values(".env")
-key = config["THE_KEY"] 
 
 def load_tsvetshop_client():
-    key = config["THE_KEY"] 
-    client = openai.AzureOpenAI(
-            azure_endpoint="https://tsvetshop.openai.azure.com/",
-            api_key=key,
-            api_version="2023-05-15"
-        )
-    return client
+    """Deprecated: prefer load_other_client() which supports multiple providers."""
+    return load_other_client()
 
 class InfoGapEmptyError(Exception):
     pass
@@ -137,7 +129,6 @@ def write_gpt_connotation_cache(lang_code, connotation_cache):
 # TODO: need to replace with the new version of the function from ipynb
 def step_caa_multi_sentence(en_fr_info_gaps, **kwargs):
     en_info_gap, fr_info_gap = en_fr_info_gaps
-    key = config["THE_KEY"] 
 
     # partial(ask_gpt_for_facts, OpenAI(api_key=key))
     def get_gpt_connotation_labels(info_gap_df, lang_code):

@@ -18,7 +18,7 @@ logger = loguru.logger
 # ---------------------------
 # 1) GLOBALS & CONFIG
 # ---------------------------
-BIO_SAVE_DIR = "scratch/wiki_food"
+BIO_SAVE_DIR = "scratch/article_contents"
 LANG_CODE_MAPPING_HEADER = {
     "en": "en",
     "fr": "fr",
@@ -36,12 +36,10 @@ class BioFilenotFoundError(Exception):
     """Custom exception for missing bio file."""
     pass
 
-# Configure your Azure OpenAI client
-client = openai.AzureOpenAI(
-    api_key=os.getenv("THE_KEY"),
-    api_version="2023-05-15",
-    azure_endpoint=os.getenv("URL_ENDPOINT"),
-)
+from packages.steps.info_diff_steps import load_other_client
+
+# Configure an LLM client supporting THE_KEY or OPENAI_API_KEY with optional OPENAI_BASE_URL
+client = load_other_client()
 
 SRC_LANGUAGE_FILTER = 'en'  # The primary language to skip in final JSON if desired
 
@@ -269,7 +267,7 @@ def translate_facts(df, src_lang, tgt_lang):
         if pd.notna(text) and text not in ["None", None]:
             try:
                 response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-5-mini-mini",
                     messages=[
                         {
                             "role": "user",
@@ -502,7 +500,7 @@ def main():
     """
     # Example placeholders
     TARGET_LANGUAGES = ['fr']
-    json_directory = "scratch/ethics_annotation_save/wikigap_data"
+    json_directory = "scratch/annotation_save/wikimt_data"
     output_csv = "wikigap_data_temp.csv"
     target_names = {
         'fact',
@@ -588,7 +586,7 @@ def main():
         nested_json = df_to_nested_json(df_merged)
 
         # Save final JSON
-        output_json = f"scratch/ethics_annotation_save/wikigap_data/json/{topic}.json"
+        output_json = f"scratch/annotation_save/wikimt_data/json/{topic}.json"
         with open(output_json, "w", encoding="utf-8") as f:
             json.dump(nested_json, f, indent=4, ensure_ascii=False)
         print(f"JSON file saved successfully: {output_json}")

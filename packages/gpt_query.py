@@ -1,15 +1,11 @@
 import openai
-from dotenv import dotenv_values
 import loguru
 import ipdb
 from typing import List, Tuple, Dict
-from dotenv import dotenv_values
 # import dataclasses    
 from dataclasses import dataclass
 from packages.constants import LANG_MAPPINGS, ASK_GPT_FACT_EXTRACTION_PROMPTS, ASK_GPT_FACT_INTERSECTION_PROMPTS
 
-config = dotenv_values(".env")
-key = config["THE_KEY"] 
 logger = loguru.logger
 
 @dataclass
@@ -27,14 +23,39 @@ class FactParagraph:
         return iter(self.facts)
 
 def load_tsvetshop_client():
-    config = dotenv_values(".env")
-    key = config['TSVETSHOP_KEY']
-    client = openai.AzureOpenAI(
-        azure_endpoint="https://tsvetshop.openai.azure.com/",
-        api_key=key,
-        api_version="2023-05-15"
-    )
-    return client
+    """Deprecated: prefer load_other_client() which supports multiple providers."""
+    try:
+        from packages.steps.info_diff_steps import load_other_client
+        return load_other_client()
+    except Exception:
+        # Fallback to default OpenAI client using environment resolution in SDK
+        return openai.OpenAI()
+
+
+def _create_chat_completion(client, *, model: str, messages: list, temperature: float | None = None, max_tokens: int | None = None, **extra):
+    """
+    Wrapper for client.chat.completions.create that gracefully handles providers
+    that don't support 'max_tokens' and require 'max_completion_tokens' instead,
+    and providers that reject temperature=0.
+    """
+    # Model-specific parameter handling
+    model_lower = (model or "").lower()
+    is_gpt5_family = model_lower in ("gpt-5", "gpt-5-mini")
+
+    # Build base params
+    params = {"model": model, "messages": messages, **extra}
+
+    # Tokens: use provider-preferred field
+    if max_tokens is not None:
+        if is_gpt5_family:
+            params["max_completion_tokens"] = max_tokens
+        else:
+            params["max_tokens"] = max_tokens
+
+    # Temperature: omit for gpt-5 family; include otherwise if explicitly provided
+    if not is_gpt5_family and temperature is not None:
+        params["temperature"] = temperature
+    return client.chat.completions.create(**params)
 
 def construct_fact_decomp_prompt(src_lang, paragraph: str):
     if src_lang == 'en':
@@ -101,11 +122,12 @@ def ask_gpt_for_facts(client, model_name: str, paragraph: str, lang_code: str):
     input_prompt = ASK_GPT_FACT_EXTRACTION_PROMPTS[lang_code].format(paragraph=paragraph)
     message = [{"role": "user", "content": input_prompt}]
 
-    response = client.chat.completions.create(
+    response = _create_chat_completion(
+        client,
         model=model_name,
         temperature=0,
         max_tokens=len(paragraph) + 1000,
-        messages=message
+        messages=message,
     )
 
     response_content = response.choices[0].message.content
@@ -163,7 +185,7 @@ def construct_fact_intersection_prompt(src_lang: str, tgt_lang_code: str, src_fa
 #         def start_debug():
 #             logger.error("Model name is not in the list of valid models.")
 #             ipdb.set_trace()
-#         assert model_name in ['gpt4v', 'gpt-4', 'gpt-4o', 'gpt-3.5-turbo-0125'], start_debug()
+#         assert model_name in ['gpt4v', 'gpt-4', 'gpt-5-mini', 'gpt-3.5-turbo-0125'], start_debug()
 #         response = client.chat.completions.create(
 #             model=model_name,
 #             max_tokens=len(src_fact_context) + len(tgt_fact_context) + 2000,
@@ -190,6 +212,7 @@ def ask_gpt_about_fact_intersection(client, model_name, cache,
                                     src_lang_code: str, tgt_lang_code: str,
                                     src_fact_context: List[str], tgt_fact_context: List[List[str]], 
                                     person_name: str, tgt_person_name: str):
+
     # Validate and fetch language names
     src_language_map = LANG_MAPPINGS.get(src_lang_code, {})
     tgt_language = src_language_map.get(tgt_lang_code, tgt_lang_code)
@@ -220,13 +243,14 @@ def ask_gpt_about_fact_intersection(client, model_name, cache,
     if input_prompt not in cache:
         message = [{"role": "user", "content": input_prompt}]
         
-        assert model_name in ['gpt4v', 'gpt-4', 'gpt-4o', 'gpt-3.5-turbo-0125'], "Invalid model name"
+        assert model_name in ['gpt4v', 'gpt-4', 'gpt-4o', 'gpt-5', 'gpt-5-mini', 'gpt-3.5-turbo-0125'], "Invalid model name"
 
-        response = client.chat.completions.create(
+        response = _create_chat_completion(
+            client,
             model=model_name,
             max_tokens=len(src_fact_context) + len(tgt_fact_context) + 2000,
             temperature=0,
-            messages=message
+            messages=message,
         )
 
         response_content = response.choices[0].message.content
@@ -244,7 +268,7 @@ def ask_gpt_about_fact_intersection(client, model_name, cache,
 def ask_gpt_if_premise_entails_hypothesis(premise: str, hypothesis: str):
     message=[{"role": "user", "content": f"Please determine if the following premise entails the following hypothesis. Return either 'entails', 'contradicts', or 'neither'.\n Premise: {premise}\n Hypothesis: {hypothesis}"}]
     response = openai.ChatCompletion.create(
-        model="gpt-4",
+        model="gpt-5-mini",
         max_tokens=len(premise) + len(hypothesis) + 1000,
         temperature=0.8,
     messages = message)
@@ -257,10 +281,12 @@ def ask_gpt_about_caa_classification(client, content: str, person_name: str ):
     ## NOTE: display vs. imply
     prompt_implied_sent = f"Consider the following text: \n {content}\n. Does this content imply a positive, neutral, or negative sentiment towards {person_name}? (pos/neutral/neg/none)"
     message = [{"role": "user", "content": prompt_implied_sent}]
-    response = client.chat.completions.create(
+    response = _create_chat_completion(
+        client,
         model="gpt-4",
-        temperature=0,
-        messages = message).choices[0].message.content
+        temperature=None,
+        messages=message,
+    ).choices[0].message.content
     if response not in ['pos', 'neutral', 'neg', 'none']:
         logger.warning(f"Invalid response from GPT-3: [[{response}]] for prompt:\n\n {prompt_implied_sent}")
     return response
@@ -270,10 +296,12 @@ def ask_gpt_about_caa_classification_coreference_resolution(client, content: str
     prompt_implied_sent = f"Consider the following text: \n {content}\n. {coref_string} Does this content imply a positive, neutral, or negative sentiment towards {person_name}? (pos/neutral/neg/none)"
     message = [{"role": "user", "content": prompt_implied_sent}]
 
-    response = client.chat.completions.create(
+    response = _create_chat_completion(
+        client,
         model="gpt-4",
-        temperature=0,
-        messages = message).choices[0].message.content
+        temperature=None,
+        messages=message,
+    ).choices[0].message.content
     if response not in ['pos', 'neutral', 'neg', 'none']:
         logger.warning(f"Invalid response from GPT-3: [[{response}]] for prompt:\n\n {prompt_implied_sent}")
     return response
@@ -291,11 +319,13 @@ def prep_caa_prompt(language, content: List[str], pronoun, person_name) -> str:
 
 def prompt_gpt_4(client, valid_labels: List[str], prompt) -> Tuple[str, int]:
     message = [{"role": "user", "content": prompt}]
-    response = client.chat.completions.create(
+    response = _create_chat_completion(
+        client,
         model="gpt-4",
-        temperature=0,
-        max_tokens = len(prompt) + 1000,
-        messages = message)
+        temperature=None,
+        max_tokens=len(prompt) + 1000,
+        messages=message,
+    )
     response_content = response.choices[0].message.content
     if response_content not in valid_labels:
         logger.warning(f"Invalid response from GPT-4: [[{response_content}]] for prompt:\n\n {prompt}")

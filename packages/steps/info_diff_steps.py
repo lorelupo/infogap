@@ -138,7 +138,7 @@ def check_gpt_fact_intersection_cache(model_name, person_name, lang_code) -> Dic
                 return json.load(f)
         except FileNotFoundError:
             return {}
-    elif model_name == 'gpt-4o':
+    elif model_name == 'gpt-5-mini':
         try: 
             cache_file = f"{cache_dir}/{person_name}_{lang_code}_fact_intersection_gpt4o.json"
             with open(cache_file, 'r') as f:
@@ -156,7 +156,7 @@ def write_gpt_fact_intersection_cache(model_name, person_name, lang_code, fact_c
         cache_file = f"{cache_dir}/{person_name}_{lang_code}_fact_intersection_gpt3.5_turbo_0125.json"
     elif model_name == 'gpt4v':
         cache_file = f"{cache_dir}/{person_name}_{lang_code}_fact_intersection_gpt4v.json"
-    elif model_name == 'gpt-4o':
+    elif model_name == 'gpt-5-mini':
         cache_file = f"{cache_dir}/{person_name}_{lang_code}_fact_intersection_gpt4o.json"
     else:
         raise ValueError(f"model_name must be one of ['gpt-4', 'gpt-3.5']")
@@ -190,12 +190,15 @@ def load_other_client():
 
     Preference order:
     1. OpenRouter (``OPENROUTER_KEY`` and ``OPENROUTER_URL``).
-    2. Explicit OpenAI settings (``OPENAI_API_KEY`` and optional ``OPENAI_BASE_URL``).
-    3. Legacy ``THE_KEY`` value.
+    2. Legacy ``THE_KEY`` value.
+    3. Explicit OpenAI settings (``OPENAI_API_KEY`` and optional ``OPENAI_BASE_URL``).
+
+    If using OpenAI and no base URL is provided, default to https://api.openai.com/v1.
     """
 
     config = dotenv_values(".env")
 
+    # OpenRouter first if both present
     openrouter_key = config.get("OPENROUTER_KEY")
     openrouter_url = config.get("OPENROUTER_URL")
     if openrouter_key and openrouter_url:
@@ -203,17 +206,25 @@ def load_other_client():
             "HTTP-Referer": config.get("OPENROUTER_REFERER", "https://infogap"),
             "X-Title": config.get("OPENROUTER_APP_NAME", "InfoGap Pipeline"),
         }
+        logger.info(
+            f"LLM client initialized: provider=OpenRouter, key_source=OPENROUTER_KEY, base_url={openrouter_url}"
+        )
         return OpenAI(
             api_key=openrouter_key,
             base_url=openrouter_url,
             default_headers=default_headers,
         )
 
-    api_key = config.get("OPENAI_API_KEY") or config.get("THE_KEY")
+    # Legacy key takes priority when present
+    api_key = config.get("THE_KEY") or config.get("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("Missing OPENAI_API_KEY or THE_KEY in .env file")
+        raise ValueError("Missing THE_KEY or OPENAI_API_KEY in .env file")
 
-    base_url = config.get("OPENAI_BASE_URL")
+    base_url = config.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    key_source = "THE_KEY" if config.get("THE_KEY") else "OPENAI_API_KEY"
+    logger.info(
+        f"LLM client initialized: provider=OpenAI-compatible, key_source={key_source}, base_url={base_url}"
+    )
     return OpenAI(api_key=api_key, base_url=base_url)
 
 def extract_fact_decomp_list(response: str) -> List[str]:
@@ -229,7 +240,7 @@ def extract_fact_decomp_list(response: str) -> List[str]:
 # def step_generate_facts(content_blocks: List[Union[Paragraph,Header]], 
 #                         lang_code: str,
 #                         person_name: str,
-#                         model_name: str = 'gpt-4o',
+#                         model_name: str = 'gpt-5-mini',
 #                         **kwargs) -> List[List[str]]:
 #     # TODO: need to update this to filter out headers.
 #     all_facts = []
@@ -283,10 +294,12 @@ def extract_fact_decomp_list(response: str) -> List[str]:
 def step_generate_facts(content_blocks: List[object], 
                         lang_code: str,
                         person_name: str,
-                        model_name: str = 'gpt-4o',
+                        model_name: str = 'gpt-5-mini',
                         **kwargs) -> List[List[str]]:
     # TODO: need to update this to filter out headers.
-
+    logger.info(
+        f"step_generate_facts: model={model_name}, lang={lang_code}, person={person_name}"
+    )
     all_facts = []
     paragraphs =  [block["paragraph"] for block in content_blocks if "paragraph" in block]
     # client = load_tsvetshop_client() 
@@ -826,6 +839,9 @@ def step_compute_info_gap_reasoning(info_gap_retrieval_dfs: Tuple[pd.DataFrame, 
         lang_code = kwargs['lang_code']
     else:
         lang_code = 'fr'
+    logger.info(
+        f"step_compute_info_gap_reasoning: model={model_name}, src=en, tgt={lang_code}, person={person_name}, tgt_person={tgt_person_name}"
+    )
     en_info_gap_df, tgt_info_gap_df, alignment_df = info_gap_retrieval_dfs
     en_info_gap_df = pl.from_pandas(en_info_gap_df) if isinstance(en_info_gap_df, pd.DataFrame) else en_info_gap_df
     tgt_info_gap_df = pl.from_pandas(tgt_info_gap_df) if isinstance(tgt_info_gap_df, pd.DataFrame) else tgt_info_gap_df
@@ -858,7 +874,8 @@ def step_compute_info_gap_reasoning(info_gap_retrieval_dfs: Tuple[pd.DataFrame, 
                 full_info_gap_num_tokens[src_lang] += total_num_tokens
                 if num_tokens == 0:
                     if input_prompt in cache:
-                        logger.info(f"Cache hit with input prompt: {input_prompt}")
+                        #logger.info(f"Cache hit with input prompt: {input_prompt}")
+                        pass
                 gpt_intersection_labels = response
                 # logger.info(f"Intersection labels: {gpt_intersection_labels}")
                 # log the number of tokens required to validate intersection labels for the person
@@ -875,7 +892,7 @@ def step_compute_info_gap_reasoning(info_gap_retrieval_dfs: Tuple[pd.DataFrame, 
     tgt_info_gap_df = tgt_info_gap_df.with_columns([
         pl.struct(['paragraph_index', 'fact_index', 'info_retrieval_mapping']).\
             map_elements(lambda row: annotation_fn(row['paragraph_index'], row['info_retrieval_mapping'], row['fact_index'])).\
-                alias(f'{model_name}_intersection_label')
+                alias(f'gpt-4o_intersection_label')
     ]).with_columns([
         pl.lit(tgt_person_name).alias(f'{lang_code}_person_name')
     ])
@@ -890,7 +907,7 @@ def step_compute_info_gap_reasoning(info_gap_retrieval_dfs: Tuple[pd.DataFrame, 
     en_info_gap_df = en_info_gap_df.with_columns([
         pl.struct(['paragraph_index', 'fact_index',  'info_retrieval_mapping']).\
             map_elements(lambda row: annotation_fn(row['paragraph_index'], row['info_retrieval_mapping'], row['fact_index'])).\
-                alias(f'{model_name}_intersection_label')
+                alias(f'gpt-4o_intersection_label')
     ]).with_columns([
         pl.lit(tgt_person_name).alias(f'{lang_code}_person_name')
     ])
@@ -920,7 +937,7 @@ def step_compute_info_gap_reasoning_simple(person_name,
                                                                 row['src_context'], 
                                                                 row['tgt_contexts'], 
                                                                 person_name, 
-                                                                person_name)[1])).alias('gpt-4_intersection_label'),
+                                                                person_name)[1])).alias('gpt-4o_intersection_label'),
             pl.lit(person_name).alias('person_name')
         ])
         result_dfs.append(en_query_df)
@@ -932,7 +949,7 @@ def step_compute_info_gap_reasoning_simple(person_name,
                                                                 row['src_context'], 
                                                                 row['tgt_contexts'], 
                                                                 person_name, 
-                                                                person_name)[1])).alias('gpt-4_intersection_label'),
+                                                                person_name)[1])).alias('gpt-4o_intersection_label'),
             pl.lit(person_name).alias('person_name')
         ])
         result_dfs.append(fr_query_df)
@@ -982,7 +999,7 @@ def step_compute_info_gap_reasoning_flan(info_gap_retrieval_dfs: Tuple[pl.DataFr
         pl.struct(['paragraph_index', 'fact_index', 'info_retrieval_mapping']).\
             map_elements(lambda row: annotation_fn(row['paragraph_index'], row['info_retrieval_mapping'], row['fact_index']))\
                 .alias(f'{model_name}_prompt')
-                # alias(f'{model_name}_intersection_label')
+                # alias(f'gpt-4o_intersection_label')
     ])
     batch_size = 64
     other_info_gap_prompts = other_info_gap_df[f'{model_name}_prompt'].to_list()
@@ -997,7 +1014,7 @@ def step_compute_info_gap_reasoning_flan(info_gap_retrieval_dfs: Tuple[pl.DataFr
         progress.update(len(batch))
     # add the intersection labels to the info gap dataframes
     other_info_gap_df = other_info_gap_df.with_columns([
-        pl.lit(other_intersection_labels).alias(f'{model_name}_intersection_label')
+        pl.lit(other_intersection_labels).alias(f'gpt-4o_intersection_label')
     ])
 
     annotation_fn = partial(annotate_llm, 'en', other_lang_code, en_info_gap_df['person_name'][0], en_info_gap_df, other_info_gap_df)
@@ -1021,7 +1038,7 @@ def step_compute_info_gap_reasoning_flan(info_gap_retrieval_dfs: Tuple[pl.DataFr
         progress.update(len(batch))
     # add the intersection labels to the info gap dataframes
     en_info_gap_df = en_info_gap_df.with_columns([
-        pl.lit(en_intersection_labels).alias(f'{model_name}_intersection_label')
+        pl.lit(en_intersection_labels).alias(f'gpt-4o_intersection_label')
     ])
     return en_info_gap_df, other_info_gap_df, alignment_df
 
@@ -1031,8 +1048,8 @@ def step_collapse_gpt_labels(gpt_info_gap_dfs, model_intersection_names, **kwarg
         # NOTE: be careful about what happens here with the 'not intersection' case
         # by accident it has worked out (assigned 'no') but it might not always work out
         return info_gap_frame.with_columns([
-            pl.col(f"{model_name}_intersection_label").map_elements(lambda labels: 'yes' if ('y' in [label.strip().lower() for label in labels]) 
-                                                        else 'no').alias(f'{model_name}_intersection_label') for model_name in model_intersection_names
+            pl.col(f"gpt-4o_intersection_label").map_elements(lambda labels: 'yes' if ('y' in [label.strip().lower() for label in labels]) 
+                                                        else 'no').alias(f'gpt-4o_intersection_label') for model_name in model_intersection_names
         ])
     en_info_gap_df = assign_gpt_label(en_info_gap_df).drop('fact_embed')
     tgt_info_gap_df = assign_gpt_label(tgt_info_gap_df).drop('fact_embed')

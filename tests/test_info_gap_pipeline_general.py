@@ -205,7 +205,7 @@ def test_content_block_retrieval_abdellah():
 # Run the test function
 if __name__ == "__main__":
     TARGETED_LANG = 'he'
-    pd = pd.read_csv('/Users/anniewang/Desktop/infogap/InfoGap_annotations.csv')
+    pd = pd.read_csv('/Users/llupo/dev/infogap/InfoGap_annotations.csv')
     src_context_en = pd[pd['language']=='en']['src_context'].tolist()
     src_context_tgt = pd[pd['language']==TARGETED_LANG]['src_context'].tolist()
     tgt_context_en = pd[pd['src_lang']=='en']['tgt_context'].tolist()

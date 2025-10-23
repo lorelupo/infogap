@@ -2,12 +2,9 @@ import json
 import glob
 import os
 import openai
- 
-client = openai.AzureOpenAI(
-    api_key=os.getenv("THE_KEY"),
-    api_version="2023-05-15",
-    azure_endpoint=os.getenv("URL_ENDPOINT")
-)
+from packages.steps.info_diff_steps import load_other_client
+
+client = load_other_client()
 
 def extract_facts(filename, topic):
     with open(filename, 'r', encoding='utf-8') as file:
@@ -45,7 +42,7 @@ def generate_quiz_questions(topic, facts_by_language):
             # prompt += f"Source Context: {fact['src_context']}\n"
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5-mini",
         messages=[
             {"role": "system", "content": "You are an assistant generating quiz questions from provided facts."},
             {"role": "user", "content": prompt}
@@ -59,7 +56,7 @@ def generate_quiz_questions(topic, facts_by_language):
     return response.choices[0].message.content.strip()
 
 def main():
-    folder_path = '/Users/anniewang/Desktop/infogap/scratch/ethics_annotation_save/wikigap_data/json/'
+    folder_path = '/Users/llupo/dev/infogap/scratch/annotation_save/wikimt_data/json/'
     json_files = glob.glob(os.path.join(folder_path, 'Paella.json'))
 
     all_topics_facts = {}

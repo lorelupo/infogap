@@ -1,5 +1,6 @@
 selected_topics = [ 
-"Snow Leopard Trust",
 "German submarine V-80",
-"Victoire Du Bois"
+"Victoire Du Bois",
+"Bulvar Dmitriya Donskogo",
+"Judy Clay",
 ]

@@ -141,7 +141,7 @@ info_gap_dfs = load_mr_artifact(metadata[0])
 | 1     | Target Language → English         |                 |
 | 2     | Legacy placeholder                | Ignored in WikiGap |
 
-Each DataFrame includes a **`gpt-4_intersection_label`** column:
+Each DataFrame includes a **`gpt-4o_intersection_label`** column:
 
 * `yes` – fact is found in **both** language editions  
 * `no`  – fact is found **only** in the source language  
@@ -185,9 +185,9 @@ python process_annotations.py
 
 | Stage | Path pattern |
 |-------|--------------|
-| Input annotation JSONs | `scratch/ethics_annotation_save/wikigap_data/annotation_{date}_{en_title}_{lang}.json` |
-| Paragraph block pickles | `scratch/wiki_food/{bio_id}_{lang}.pkl` |
-| Final WikiGap JSONs | `scratch/ethics_annotation_save/wikigap_data/json/{topic}.json` |
+| Input annotation JSONs | `scratch/annotation_save/wikimt_data/annotation_{date}_{en_title}_{lang}.json` |
+| Paragraph block pickles | `scratch/article_contents/{bio_id}_{lang}.pkl` |
+| Final WikiGap JSONs | `scratch/annotation_save/wikimt_data/json/{topic}.json` |
 
 #### Running the script
 
