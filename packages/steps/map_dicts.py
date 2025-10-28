@@ -260,7 +260,7 @@ def get_en_zh_info_diff_map_dict(en_bio_id=None, zh_bio_id=None, person_name=Non
 
 
 
-def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=None, tgt_person_name=None, tgt_lang=None, model_name: str = 'gpt-5-mini'):
+def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=None, tgt_person_name=None, tgt_lang=None, model_name: str = 'gpt-5-mini', use_batch: bool = False, batch_poll_interval: int = 30, batch_timeout: int = 3600):
     map_reduce_dict = OrderedDict()
 
     ## English
@@ -280,18 +280,28 @@ def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=N
         **tgt_bio_id_dict,
         **tgt_lang_dict
     })
+    fact_version_en = '003-batch' if use_batch else '003'
+    fact_version_tgt = '002-batch' if use_batch else '002'
+    reasoning_version = '006-batch' if use_batch else '006'
+
     map_reduce_dict['step_generate_facts'] = SingletonStep(step_generate_facts, { # in info diff steps
-        'version': '003',
+        'version': fact_version_en,
         'lang_code': 'en',
         'model_name': model_name,
         'content_blocks': 'step_get_en_content_blocks', 
+        'use_batch': use_batch,
+        'batch_poll_interval': batch_poll_interval,
+        'batch_timeout': batch_timeout,
         **person_name_dict
     })
     map_reduce_dict['step_generate_facts_tgt'] = SingletonStep(step_generate_facts, { # in info diff steps
-        'version': '002',
+        'version': fact_version_tgt,
         'lang_code': tgt_lang,
         'model_name': model_name,
         'content_blocks': 'step_get_tgt_content_blocks', 
+        'use_batch': use_batch,
+        'batch_poll_interval': batch_poll_interval,
+        'batch_timeout': batch_timeout,
         **person_name_dict
     })
     # Paragraph Alignment, correcting for Hubness between paragraphs
@@ -319,9 +329,12 @@ def get_en_tgt_info_diff_map_dict(en_bio_id=None, tgt_bio_id=None, person_name=N
         'tgt_bio_id': tgt_bio_id
     })
     map_reduce_dict['step_reasoning_intersection_label'] = SingletonStep(step_compute_info_gap_reasoning, {
-        'version': '006',
+        'version': reasoning_version,
         'model_name': model_name,
         'lang_code': tgt_lang,
+        'use_batch': use_batch,
+        'batch_poll_interval': batch_poll_interval,
+        'batch_timeout': batch_timeout,
         'info_gap_retrieval_dfs': 'step_find_retrieval_candidates',
         **person_name_dict
     })

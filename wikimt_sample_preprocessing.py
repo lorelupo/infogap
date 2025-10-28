@@ -72,6 +72,18 @@ def parse_args():
         default=42,
         help='Random seed for sampling'
     )
+    parser.add_argument(
+        '--treatment-group-file',
+        type=str,
+        default='treatment_group_rebalanced_after_sent_div_06B_d30.csv',
+        help='Treatment group CSV filename (default: treatment_group_rebalanced_after_sent_div_06B_d30.csv)'
+    )
+    parser.add_argument(
+        '--control-group-file',
+        type=str,
+        default='control_group_rebalanced_after_sent_div_06B_d30.csv',
+        help='Control group CSV filename (default: control_group_rebalanced_after_sent_div_06B_d30.csv)'
+    )
     
     args = parser.parse_args()
     
@@ -85,6 +97,21 @@ def parse_args():
 # --------------------------------------------------------------------------- #
 # Text cleaning functions
 # --------------------------------------------------------------------------- #
+
+def has_invalid_filename_chars(title):
+    """
+    Check if title contains characters that cannot be used in filenames.
+    
+    Args:
+        title (str): Wikipedia article title
+    
+    Returns:
+        bool: True if title contains forward slash (path separator)
+    """
+    # Only check for forward slash - it's a path separator on all systems
+    # Colons are fine on Linux/Unix (where HPC clusters run)
+    return '/' in title
+
 
 # Global variable for Ukrainian NLP pipeline
 _NLP_UK = None
@@ -343,43 +370,41 @@ def clean_extracts(text, language, AUXILIARY_SECTIONS, LANG_MAP, AUX_PATTERNS, p
 # Data loading and sampling functions
 # --------------------------------------------------------------------------- #
 
-def load_treatment_control_groups(input_data_langdir):
+def load_treatment_control_groups(input_data_langdir, treatment_group_filename, control_group_filename):
     """Load treatment and control group CSV files."""
     print("=" * 80)
     print("STEP 1: Loading treatment and control group data")
     print("=" * 80)
     
-    treatment_file = os.path.join(
-        input_data_langdir, 
-        'treatment_group_rebalanced_after_sent_div_06B_d30.csv'
-    )
-    control_file = os.path.join(
-        input_data_langdir, 
-        'control_group_rebalanced_after_sent_div_06B_d30.csv'
-    )
+    treatment_group_file = os.path.join(input_data_langdir, treatment_group_filename)
+    control_group_file = os.path.join(input_data_langdir, control_group_filename)
     
-    print(f"Loading treatment group from: {treatment_file}")
-    df_treat_group = pd.read_csv(treatment_file)
+    print(f"Loading treatment group from: {treatment_group_file}")
+    df_treat_group = pd.read_csv(treatment_group_file)
     print(f"  ✓ Loaded {len(df_treat_group)} treatment articles")
     
-    print(f"Loading control group from: {control_file}")
-    df_control_group = pd.read_csv(control_file)
+    print(f"Loading control group from: {control_group_file}")
+    df_control_group = pd.read_csv(control_group_file)
     print(f"  ✓ Loaded {len(df_control_group)} control articles")
     
     return df_treat_group, df_control_group
 
 
 def sample_articles(df_treat_group, df_control_group, n_sample, random_seed):
-    """Sample articles from treatment and control groups."""
+    """
+    Sample articles from treatment and control groups.
+    """
     print("\n" + "=" * 80)
     print(f"STEP 2: Sampling {n_sample} articles ({n_sample//2} treatment + {n_sample//2} control)")
     print("=" * 80)
     
-    df_sampled_treat = df_treat_group.sample(n=n_sample//2, random_state=random_seed)
+    sample_size = n_sample // 2
+    
+    df_sampled_treat = df_treat_group.sample(n=sample_size, random_state=random_seed)
     df_sampled_treat_ids = set(df_sampled_treat['translationId'].tolist())
     print(f"  ✓ Sampled {len(df_sampled_treat_ids)} treatment articles")
     
-    df_sampled_control = df_control_group.sample(n=n_sample//2, random_state=random_seed)
+    df_sampled_control = df_control_group.sample(n=sample_size, random_state=random_seed)
     df_sampled_control_ids = set(df_sampled_control['qid'].tolist())
     print(f"  ✓ Sampled {len(df_sampled_control_ids)} control articles")
     
@@ -414,15 +439,18 @@ def retrieve_revision_contents(input_data_langdir, df_sampled_treat_ids, df_samp
                     continue
                 
                 # Append to the list
-                sample_contents.append({
-                    id_field: id_val,
-                    'sourceTitle': article['sourceTitle'],
-                    'targetTitle': article['targetTitle'],
-                    'sourceLanguage': article['sourceLanguage'],
-                    'targetLanguage': article['targetLanguage'],
-                    'raw_source': article['d30']['sourceContent'],
-                    'raw_target': article['d30']['targetContent']
-                })
+                if article.get('d30') is not None:
+                    sample_contents.append({
+                        id_field: id_val,
+                        'sourceTitle': article['sourceTitle'],
+                        'targetTitle': article['targetTitle'],
+                        'sourceLanguage': article['sourceLanguage'],
+                        'targetLanguage': article['targetLanguage'],
+                        'raw_source': article['d30']['sourceContent'],
+                        'raw_target': article['d30']['targetContent']
+                    })
+                else:
+                    print(f"  ✗ Warning: 'd30' content missing for article {article['sourceTitle']}")
         
         print(f"  ✓ Retrieved {len(sample_contents)} articles")
         if len(sample_contents) > 0:
@@ -436,8 +464,10 @@ def retrieve_revision_contents(input_data_langdir, df_sampled_treat_ids, df_samp
 # --------------------------------------------------------------------------- #
 
 def merge_and_save(df_sampled_treat, df_sampled_control, sample_content_treat, 
-                   sample_content_control, scratch_dir, tgt_lang, n_sample):
-    """Merge sampled metadata with revision contents and save to pickle."""
+                   sample_content_control, scratch_dir, tgt_lang, n_sample, random_seed):
+    """
+    Merge sampled metadata with revision contents and save to pickle.
+    """
     print("\n" + "=" * 80)
     print("STEP 4: Merging and saving combined dataframe")
     print("=" * 80)
@@ -500,7 +530,9 @@ def generate_config_files(df_combined, infogap_dir, tgt_lang):
     title_pairs = list(zip(df_combined['sourceTitle'], df_combined['targetTitle']))
     
     # Generate scraped_titles_{tgt}.py file
-    output_file = os.path.join(infogap_dir, 'packages', f'scraped_titles_{tgt_lang}.py')
+    output_file = os.path.join(infogap_dir, f'scraped_titles_{tgt_lang}.py')
+    
+    print(f"  Writing to: {output_file}")
     
     with open(output_file, 'w', encoding='utf-8') as f:
         # Write header comment
@@ -520,6 +552,8 @@ def generate_config_files(df_combined, infogap_dir, tgt_lang):
         f.write("] \n")
     
     print(f"✓ Generated: {output_file}")
+    print(f"  Total pairs: {len(title_pairs)}")
+    print(f"  File size: {os.path.getsize(output_file)} bytes")
     
     # Generate wikigap_topics_scrape.py file
     output_file = os.path.join(infogap_dir, 'wikigap_topics_scrape.py')
@@ -583,6 +617,10 @@ def clean_and_persist_blocks(df_combined, infogap_dir, input_data_dir):
     os.makedirs(BIO_SAVE_DIR, exist_ok=True)
     print(f"Saving blocks to: {BIO_SAVE_DIR}")
     
+    # Track failed articles for reporting
+    failed_articles = []
+    successful_count = 0
+    
     # Process each article
     total_articles = len(df_combined)
     for idx, row in df_combined.iterrows():
@@ -593,48 +631,79 @@ def clean_and_persist_blocks(df_combined, infogap_dir, input_data_dir):
         
         print(f"\n[{idx+1}/{total_articles}] Processing: {src_title} ({src_lang}) ↔ {tgt_title} ({tgt_lang})")
         
-        # Clean source text
-        cleaned_src = clean_extracts(
-            row['raw_source'], 
-            src_lang, 
-            AUXILIARY_SECTIONS, 
-            LANG_MAP, 
-            AUX_PATTERNS, 
-            patterns,
-            remove_headers=False, 
-            into_sentences=False
-        )
+        # Check for invalid filename characters
+        if has_invalid_filename_chars(src_title) or has_invalid_filename_chars(tgt_title):
+            error_msg = f"{src_title} ({src_lang}) ↔ {tgt_title} ({tgt_lang})"
+            reason = "Article title contains '/' which cannot be used in filenames"
+            failed_articles.append((error_msg, reason))
+            print(f"  ⚠️  WARNING: Skipping article - {reason}")
+            continue
         
-        # Clean target text
-        cleaned_tgt = clean_extracts(
-            row['raw_target'], 
-            tgt_lang, 
-            AUXILIARY_SECTIONS, 
-            LANG_MAP, 
-            AUX_PATTERNS, 
-            patterns,
-            remove_headers=False, 
-            into_sentences=False
-        )
-        
-        # Process and save source blocks
-        src_blocks = process_wikipedia_text(cleaned_src, src_lang)
-        src_file = os.path.join(BIO_SAVE_DIR, f"{src_title}_{src_lang}.pkl")
-        with open(src_file, "wb") as f:
-            dill.dump(src_blocks, f)
-        print(f"  ✓ Saved {src_title}_{src_lang}.pkl ({len(src_blocks)} blocks)")
-        
-        # Process and save target blocks
-        tgt_blocks = process_wikipedia_text(cleaned_tgt, tgt_lang)
-        tgt_file = os.path.join(BIO_SAVE_DIR, f"{tgt_title}_{tgt_lang}.pkl")
-        with open(tgt_file, "wb") as f:
-            dill.dump(tgt_blocks, f)
-        print(f"  ✓ Saved {tgt_title}_{tgt_lang}.pkl ({len(tgt_blocks)} blocks)")
+        try:
+            # Clean source text
+            cleaned_src = clean_extracts(
+                row['raw_source'], 
+                src_lang, 
+                AUXILIARY_SECTIONS, 
+                LANG_MAP, 
+                AUX_PATTERNS, 
+                patterns,
+                remove_headers=False, 
+                into_sentences=False
+            )
+            
+            # Clean target text
+            cleaned_tgt = clean_extracts(
+                row['raw_target'], 
+                tgt_lang, 
+                AUXILIARY_SECTIONS, 
+                LANG_MAP, 
+                AUX_PATTERNS, 
+                patterns,
+                remove_headers=False, 
+                into_sentences=False
+            )
+            
+            # Process and save source blocks
+            src_blocks = process_wikipedia_text(cleaned_src, src_lang)
+            src_filename = f"{src_title}_{src_lang}.pkl"
+            src_file = os.path.join(BIO_SAVE_DIR, src_filename)
+            with open(src_file, "wb") as f:
+                dill.dump(src_blocks, f)
+            print(f"  ✓ Saved {src_filename} ({len(src_blocks)} blocks)")
+            
+            # Process and save target blocks
+            tgt_blocks = process_wikipedia_text(cleaned_tgt, tgt_lang)
+            tgt_filename = f"{tgt_title}_{tgt_lang}.pkl"
+            tgt_file = os.path.join(BIO_SAVE_DIR, tgt_filename)
+            with open(tgt_file, "wb") as f:
+                dill.dump(tgt_blocks, f)
+            print(f"  ✓ Saved {tgt_filename} ({len(tgt_blocks)} blocks)")
+            
+            successful_count += 1
+            
+        except Exception as e:
+            error_msg = f"{src_title} ({src_lang}) ↔ {tgt_title} ({tgt_lang})"
+            failed_articles.append((error_msg, str(e)))
+            print(f"  ⚠️  WARNING: Failed to process article pair - {type(e).__name__}: {e}")
+            continue
     
     # Restore original working directory
     os.chdir(original_cwd)
     
-    print(f"\n✓ Processed and saved {total_articles * 2} article files")
+    # Report summary
+    print("\n" + "=" * 80)
+    print("PROCESSING SUMMARY")
+    print("=" * 80)
+    print(f"✓ Successfully processed: {successful_count}/{total_articles} article pairs ({successful_count*2} files)")
+    if failed_articles:
+        print(f"⚠️  Failed: {len(failed_articles)} article pairs")
+        print("\nFailed articles:")
+        for article, error in failed_articles:
+            print(f"  - {article}")
+            print(f"    Error: {error}")
+    
+    return successful_count, failed_articles
 
 
 # --------------------------------------------------------------------------- #
@@ -652,6 +721,8 @@ def main():
     print(f"Sample size: {args.n_sample} ({args.n_sample//2} treatment + {args.n_sample//2} control)")
     print(f"Infogap directory: {args.infogap_dir}")
     print(f"Input data directory: {args.input_data_dir}")
+    print(f"Treatment file: {args.treatment_group_file}")
+    print(f"Control file: {args.control_group_file}")
     print(f"Random seed: {args.random_seed}")
     print("=" * 80)
     
@@ -663,7 +734,9 @@ def main():
     scratch_dir = os.path.join(args.infogap_dir, 'scratch')
     
     # Execute preprocessing steps
-    df_treat_group, df_control_group = load_treatment_control_groups(input_data_langdir)
+    df_treat_group, df_control_group = load_treatment_control_groups(
+        input_data_langdir, args.treatment_group_file, args.control_group_file
+    )
     
     df_sampled_treat, df_sampled_treat_ids, df_sampled_control, df_sampled_control_ids = sample_articles(
         df_treat_group, df_control_group, args.n_sample, args.random_seed
@@ -675,13 +748,16 @@ def main():
     
     df_combined = merge_and_save(
         df_sampled_treat, df_sampled_control, sample_content_treat, 
-        sample_content_control, scratch_dir, args.tgt_lang, args.n_sample
+        sample_content_control, scratch_dir, args.tgt_lang, args.n_sample, 
+        args.random_seed
     )
     
     generate_config_files(df_combined, args.infogap_dir, args.tgt_lang)
     
     # Clean and persist blocks
-    clean_and_persist_blocks(df_combined, args.infogap_dir, args.input_data_dir)
+    successful_count, failed_articles = clean_and_persist_blocks(
+        df_combined, args.infogap_dir, args.input_data_dir
+    )
     
     print("\n" + "=" * 80)
     print("✓ Preprocessing completed successfully!")

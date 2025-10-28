@@ -9,7 +9,6 @@ import ast
 import requests
 from datetime import datetime
 from deep_translator import GoogleTranslator
-import openai
 import loguru
 from tqdm import tqdm
 
@@ -143,11 +142,11 @@ def process_single_json_file(directory_path, filename, target_names, output_csv_
 
 def retrieve_title(topic, tgt_lang):
     """
-    Dynamically import en_tgt_title_pairs from packages.scraped_titles_{tgt_lang}
+    Dynamically import en_tgt_title_pairs from scraped_titles_{tgt_lang}
     and return the target title that matches `topic`.
     """
-    module_name = f"packages.scraped_titles_{tgt_lang}"
-    mod = importlib.import_module(module_name)  # import packages.scraped_titles_ru, for example
+    module_name = f"scraped_titles_{tgt_lang}"
+    mod = importlib.import_module(module_name)  # import scraped_titles_ru, for example
     en_tgt_title_pairs = mod.en_tgt_title_pairs
 
     for src_topic, tgt_topic_val in en_tgt_title_pairs:

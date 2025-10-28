@@ -1,7 +1,6 @@
 import json
 import glob
 import os
-import openai
 from packages.steps.info_diff_steps import load_other_client
 
 client = load_other_client()

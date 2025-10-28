@@ -2,7 +2,7 @@ import os
 import json
 import datetime
 from typing import List
-import openai
+from openai import BadRequestError
 from tqdm import tqdm
 import ipdb
 import polars as pl
@@ -207,7 +207,7 @@ def step_caa_multi_sentence_en_tgt(en_tgt_info_gaps, tgt_lang_code, **kwargs):
                     result, total_tokens = partial_ask_gpt_about_caa_classification(prompt=caa_prompt)
                     logger.info(f"Total tokens: {total_tokens}")
                     connotation_cache[person_name][caa_prompt] = result
-                except openai.BadRequestError:
+                except BadRequestError:
                     logger.warning(f"Hit content filter with prompt: {caa_prompt}")
                     progress.update(1)
                     return 'blocked by content filter'

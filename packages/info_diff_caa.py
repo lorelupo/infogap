@@ -7,7 +7,7 @@ from typing import List
 from tqdm import tqdm
 from collections import OrderedDict
 from flowmason import SingletonStep, MapReduceStep
-from .constants import HF_CACHE_DIR
+from .constants import HF_CACHE_DIR, get_labse_model
 from sentence_transformers import SentenceTransformer
 from nltk import sent_tokenize
 import numpy as np
@@ -103,7 +103,7 @@ def step_forced_align_facts_to_paragraph(en_fr_info_gaps, en_content_blocks,
     # set en_paragraphs to all the elements of type Paragraph in en_content_blocks
     en_paragraphs = [block for block in en_content_blocks if isinstance(block, Paragraph)]
     fr_paragraphs = [block for block in fr_content_blocks if isinstance(block, Paragraph)]
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+    model = SentenceTransformer(get_labse_model())
     en_info_gaps, fr_info_gaps, alignment_dfs = [info_gap for info_gap in en_fr_info_gaps]
 
     # NOTE: this function assumes that only a single bio is being processed at a time.
@@ -138,7 +138,7 @@ def step_forced_align_en_tgt_facts_to_paragraph(en_tgt_info_gaps, en_content_blo
     # set en_paragraphs to all the elements of type Paragraph in en_content_blocks
     en_paragraphs = [block["paragraph"] for block in en_content_blocks if "paragraph" in block]
     tgt_paragraphs = [block["paragraph"] for block in tgt_content_blocks if "paragraph" in block]
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+    model = SentenceTransformer(get_labse_model())
     en_info_gaps, tgt_info_gaps, alignment_dfs = [info_gap for info_gap in en_tgt_info_gaps]
 
 

@@ -4,12 +4,12 @@ from typing import List, Tuple
 import polars as pl
 from sentence_transformers import SentenceTransformer
 import loguru
-from packages.constants import HF_CACHE_DIR
+from packages.constants import HF_CACHE_DIR, get_labse_model
 
 logger = loguru.logger
 
 # class Sente
-model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+model = SentenceTransformer(get_labse_model())
 
 def obtain_hubness_measure(fact_embed_df: pl.DataFrame, 
                     background_corpus_sents: List[str]):

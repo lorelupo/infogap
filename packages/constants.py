@@ -50,6 +50,53 @@ BIO_SAVE_DIR = f"{SCRATCH_DIR}/wikimt"
 # BIO_SAVE_DIR = f"{SCRATCH_DIR}/wiki_bios"
 
 HF_CACHE_DIR = f"{SCRATCH_DIR}/hf_cache"
+LABSE_MODEL_PATH = f"{HF_CACHE_DIR}/sentence-transformers_LaBSE"
+
+# Helper function to get the correct LaBSE model path or identifier
+def get_labse_model():
+    """
+    Returns the path to load LaBSE model.
+    Works with both sentence-transformers v2.x and v5.x
+    
+    v2.x: Models cached as <cache_folder>/<org>_<model>/
+    v5.x: Models cached in HuggingFace Hub cache structure
+    
+    If the model is cached locally with proper config files, use that path to ensure correct CLS pooling.
+    Otherwise, return the HuggingFace model ID to download.
+    """
+    import os
+    import sentence_transformers
+    
+    # Get sentence-transformers version
+    st_version = sentence_transformers.__version__
+    major_version = int(st_version.split('.')[0])
+    
+    # For v2.x, check the old cache structure
+    if major_version < 5:
+        # v2.x uses <cache_folder>/sentence-transformers_LaBSE/
+        config_file = os.path.join(LABSE_MODEL_PATH, '1_Pooling', 'config.json')
+        modules_file = os.path.join(LABSE_MODEL_PATH, 'modules.json')
+        
+        if os.path.exists(config_file) and os.path.exists(modules_file):
+            # Local cache exists with proper structure - use it
+            return LABSE_MODEL_PATH
+    else:
+        # v5.x uses HuggingFace Hub cache structure
+        # Check if model exists in the new cache location
+        # Format: <cache_folder>/hub/models--sentence-transformers--LaBSE/
+        hub_cache_path = os.path.join(HF_CACHE_DIR, 'hub', 'models--sentence-transformers--LaBSE')
+        
+        # In v5.x, check for snapshot directory which contains the actual model
+        if os.path.exists(hub_cache_path):
+            snapshots_dir = os.path.join(hub_cache_path, 'snapshots')
+            if os.path.exists(snapshots_dir):
+                # Model is cached in v5.x format
+                # Just return the model ID - v5.x will find it automatically
+                return 'sentence-transformers/LaBSE'
+    
+    # Model not cached or cache incomplete - download from HuggingFace
+    return 'sentence-transformers/LaBSE'
+
 ANNOTATION_SAVE_PATH = f"{SCRATCH_DIR}/annotation_save"
 GPT_CACHE_LOCATION = f"{SCRATCH_DIR}/gpt-cache"
 CONNOTATION_FLAN_SAVE_DIR  = f"{SCRATCH_DIR}/connotation_flan_t5"

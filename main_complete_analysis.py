@@ -2,7 +2,13 @@ import loguru
 import numpy as np
 import ipdb
 import datetime
+import time
 import polars as pl
+try:
+    from pyo3_runtime import PanicException
+except ImportError:
+    # Fallback if pyo3_runtime is not available
+    PanicException = type('PanicException', (Exception,), {})
 from collections import OrderedDict
 from flowmason.flowmason import conduct, SingletonStep, load_artifact_with_step_name, MapReduceStep, load_mr_artifact
 import click
@@ -881,7 +887,7 @@ def assess_flan_on_annotations(language):
 
 # Code used for CSCW 2026 paper
 ###############################################################################
-def run_complete_gpt_pipeline(en_bio_id, tgt_bio_id, model_name: str = 'gpt-5-mini'):
+def run_complete_gpt_pipeline(en_bio_id, tgt_bio_id, model_name: str = 'gpt-5-mini', use_batch: bool = False, batch_poll_interval: int = 30, batch_timeout: int = 3600):
     """
     Runs the GPT pipeline for a single (en_bio_id, tgt_bio_id) pair.
     Returns a tuple: (en_bio_id, tgt_bio_id, success, error_message)
@@ -889,13 +895,18 @@ def run_complete_gpt_pipeline(en_bio_id, tgt_bio_id, model_name: str = 'gpt-5-mi
 
     tgt_lang = TGT_LANG
     logger.info(
-        f"run_complete_gpt_pipeline: model={model_name}, en_bio_id={en_bio_id}, tgt_bio_id={tgt_bio_id}, tgt_lang={tgt_lang}"
+        f"run_complete_gpt_pipeline: model={model_name}, en_bio_id={en_bio_id}, tgt_bio_id={tgt_bio_id}, tgt_lang={tgt_lang}, use_batch={use_batch}"
     )
     try:
         # ---------------------------
         # Step 1: map_step_compute_info_gap
         # ---------------------------
-        info_gap_map_dict = get_en_tgt_info_diff_map_dict(model_name=model_name)
+        info_gap_map_dict = get_en_tgt_info_diff_map_dict(
+            model_name=model_name,
+            use_batch=use_batch,
+            batch_poll_interval=batch_poll_interval,
+            batch_timeout=batch_timeout,
+        )
         decoded_tgt_bio_id = urllib.parse.unquote(tgt_bio_id)
 
         full_map_dict = OrderedDict()
@@ -956,32 +967,60 @@ def run_complete_gpt_pipeline(en_bio_id, tgt_bio_id, model_name: str = 'gpt-5-mi
         # If everything succeeded
         return (en_bio_id, tgt_bio_id, True, None)
 
+    except PanicException as e:
+        # Handle Polars panic exceptions (e.g., when API errors occur inside Polars UDFs)
+        error_msg = str(e)
+        logger.error(f"Polars panic exception for {en_bio_id}: {error_msg}")
+        return (en_bio_id, tgt_bio_id, False, f"Polars panic: {error_msg}")
     except Exception as e:
-        # Return failure info
-        return (en_bio_id, tgt_bio_id, False, str(e))
+        # Return failure info for all other exceptions
+        error_msg = str(e)
+        logger.error(f"Exception for {en_bio_id}: {error_msg}")
+        return (en_bio_id, tgt_bio_id, False, error_msg)
 
 import concurrent.futures
-def process_topic(en_bio_id, tgt_bio_id, model_name: str):
+def process_topic(en_bio_id, tgt_bio_id, model_name: str, use_batch: bool, batch_poll_interval: int, batch_timeout: int):
+    article_start_time = time.time()
     try:
-        # run_complete_gpt_pipeline already handles everything
-        # but let's say it returns True or raises an error
-        run_complete_gpt_pipeline(en_bio_id, tgt_bio_id, model_name=model_name)
-        return (en_bio_id, tgt_bio_id, True, None)
+        # run_complete_gpt_pipeline returns (en_bio_id, tgt_bio_id, success, error_message)
+        result = run_complete_gpt_pipeline(
+            en_bio_id,
+            tgt_bio_id,
+            model_name=model_name,
+            use_batch=use_batch,
+            batch_poll_interval=batch_poll_interval,
+            batch_timeout=batch_timeout,
+        )
+        # Add article processing time to the result tuple
+        article_time = time.time() - article_start_time
+        return result + (article_time,)
+    except PanicException as e:
+        # Handle Polars panic exceptions at the outer level too
+        error_msg = str(e)
+        logger.error(f"Polars panic caught in process_topic for {en_bio_id}: {error_msg}")
+        article_time = time.time() - article_start_time
+        return (en_bio_id, tgt_bio_id, False, f"Polars panic: {error_msg}", article_time)
     except Exception as e:
-        return (en_bio_id, tgt_bio_id, False, str(e))
+        error_msg = str(e)
+        logger.error(f"Exception caught in process_topic for {en_bio_id}: {error_msg}")
+        article_time = time.time() - article_start_time
+        return (en_bio_id, tgt_bio_id, False, error_msg, article_time)
 
 @click.command()
 @click.option('--model', default='gpt-5-mini', help='LLM model to use for GPT steps, e.g., gpt-4, gpt-5-mini')
-def run_multiple_topics(model):
+@click.option('--batch', is_flag=True, default=False, help='Use OpenAI Batch API for GPT calls')
+@click.option('--batch-poll-interval', default=30, show_default=True, help='Seconds between batch status checks')
+@click.option('--batch-timeout', default=3600, show_default=True, help='Maximum seconds to wait for a batch job before falling back')
+def run_multiple_topics(model, batch, batch_poll_interval, batch_timeout):
     # commented out the following line, cuz it's for debugging
     # topics = [("Oolong", "Улун")]
     # #("Oolong", "乌龙茶")
     # #("Oolong", "Улун"),("Oolong", "Thé Oolong")
    
     input_tgt_lang = TGT_LANG
-    # Note: the scraped titles for both en and tgt language are saved in the same file called scraped_titles_{lang}.py in packages folder.
+    # Note: the scraped titles for both en and tgt language are saved in the same file called scraped_titles_{lang}.py in main infogap directory.
     try:
-        mod = importlib.import_module(f"packages.scraped_titles_{input_tgt_lang}")
+        mod = importlib.import_module(f"scraped_titles_{input_tgt_lang}")
         en_tgt_title_pairs = getattr(mod, "en_tgt_title_pairs", None)
         if not en_tgt_title_pairs:
             raise ImportError("en_tgt_title_pairs not found in module")
@@ -989,9 +1028,51 @@ def run_multiple_topics(model):
         # Fallback: try to read a default list from CURRENT_* constants or use a tiny stub
         en_tgt_title_pairs = [(name.replace(' ', '_'), name.replace(' ', '_')) for name in CURRENT_PERSON_NAMES[:1]]
 
-    topics = en_tgt_title_pairs
+    # Check which articles already have annotation files
+    # Annotation files are saved as: annotation_{date}_{topic}_{tgt_lang}.json
+    # We check for any date to determine if an article was already processed
+    annotation_dir = os.path.join(ANNOTATION_SAVE_PATH, "wikigap_data")
+    already_processed = set()
+    
+    if os.path.exists(annotation_dir):
+        # Pattern: annotation_YYYY-MM-DD_{topic}_{tgt_lang}.json
+        for annotation_file in os.listdir(annotation_dir):
+            if annotation_file.startswith("annotation_") and annotation_file.endswith(f"_{input_tgt_lang}.json"):
+                # Remove prefix "annotation_" and suffix "_{lang}.json"
+                prefix = "annotation_"
+                suffix = f"_{input_tgt_lang}.json"
+                
+                # Extract the middle part
+                middle = annotation_file[len(prefix):-len(suffix)]
+                
+                # The middle part is: YYYY-MM-DD_{topic}
+                # We need to remove the date part (first 10 chars + underscore = 11 chars)
+                if len(middle) > 11 and middle[10] == '_':
+                    topic_name = middle[11:]  # Skip "YYYY-MM-DD_"
+                    already_processed.add(topic_name)
+        
+        if already_processed:
+            logger.info(f"{'='*80}")
+            logger.info(f"Found {len(already_processed)} articles with existing annotation files in {annotation_dir}")
+            # Show first 3 examples
+            first_three = sorted(already_processed)[:3]
+            logger.info(f"Examples of articles that will be skipped:")
+            for i, topic in enumerate(first_three, 1):
+                logger.info(f"  {i}. {topic}")
+            if len(already_processed) > 3:
+                logger.info(f"  ... and {len(already_processed) - 3} more")
+            logger.info(f"{'='*80}")
+    
+    # Filter out already processed articles
+    topics_before = en_tgt_title_pairs
+    topics = [(en_id, tgt_id) for (en_id, tgt_id) in topics_before 
+              if en_id.replace('_', ' ') not in already_processed]
+    
+    skipped_count = len(topics_before) - len(topics)
     logger.info(
-        f"run_multiple_topics: model={model}, tgt_lang={input_tgt_lang}, topics={len(topics)}"
+        f"run_multiple_topics: model={model}, tgt_lang={input_tgt_lang}, "
+        f"total_in_list={len(topics_before)}, skipped_already_processed={skipped_count}, "
+        f"topics_to_process={len(topics)}, use_batch={batch}"
     )
 
     # Decide how many workers you want. E.g., 4 parallel processes:
@@ -1004,25 +1085,53 @@ def run_multiple_topics(model):
 
         # Submit each topic to the executor
         future_to_topic = {
-            executor.submit(process_topic, en_bio_id, tgt_bio_id, model): (en_bio_id, tgt_bio_id)
+            executor.submit(
+                process_topic,
+                en_bio_id,
+                tgt_bio_id,
+                model,
+                batch,
+                batch_poll_interval,
+                batch_timeout,
+            ): (en_bio_id, tgt_bio_id)
             for (en_bio_id, tgt_bio_id) in topics
         }
+
+        # Track progress
+        total_topics = len(topics)
+        completed_count = 0
+        start_time = time.time()
 
         # As each task completes, log success/failure
         for future in concurrent.futures.as_completed(future_to_topic):
             en_bio_id, tgt_bio_id = future_to_topic[future]
+            completed_count += 1
+            
+            # Calculate timing information
+            elapsed_time = time.time() - start_time
+            avg_time_per_article = elapsed_time / completed_count
+            remaining_articles = total_topics - completed_count
+            estimated_remaining_time = avg_time_per_article * remaining_articles
+            
+            # Format times as HH:MM:SS
+            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+            remaining_str = time.strftime("%H:%M:%S", time.gmtime(estimated_remaining_time))
+            
             try:
-                en_bio_id, tgt_bio_id, success, error_message = future.result()
+                en_bio_id, tgt_bio_id, success, error_message, article_time = future.result()
+                article_time_str = time.strftime("%H:%M:%S", time.gmtime(article_time))
+                
                 if success:
+                    logger.info(f"Progress: {completed_count}/{total_topics} - [SUCCESS] {en_bio_id} | Article: {article_time_str} | Elapsed: {elapsed_str} | Est. remaining: {remaining_str}")
                     f.write(f"[SUCCESS] Topic: {en_bio_id}, {tgt_bio_id}\n")
                 else:
+                    logger.info(f"Progress: {completed_count}/{total_topics} - [FAIL] {en_bio_id} | Article: {article_time_str} | Elapsed: {elapsed_str} | Est. remaining: {remaining_str}")
                     f.write(f"[FAIL] Topic: {en_bio_id}, {tgt_bio_id}\n  Error: {error_message}\n")
             except Exception as exc:
                 # Catch any other weird failures
+                logger.info(f"Progress: {completed_count}/{total_topics} - [FAIL] {en_bio_id} (exception) | Elapsed: {elapsed_str} | Est. remaining: {remaining_str}")
                 f.write(f"[FAIL] Unexpected error. Topic: {en_bio_id}, {tgt_bio_id}\n")
             f.flush()  # flush immediately so we don’t lose logs
-
-
 
 
 

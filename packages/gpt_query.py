@@ -1,8 +1,7 @@
-import openai
+from openai import OpenAI
 import loguru
 import ipdb
 from typing import List, Tuple, Dict
-# import dataclasses    
 from dataclasses import dataclass
 from packages.constants import LANG_MAPPINGS, ASK_GPT_FACT_EXTRACTION_PROMPTS, ASK_GPT_FACT_INTERSECTION_PROMPTS
 
@@ -29,7 +28,7 @@ def load_tsvetshop_client():
         return load_other_client()
     except Exception:
         # Fallback to default OpenAI client using environment resolution in SDK
-        return openai.OpenAI()
+        return OpenAI()
 
 
 def _create_chat_completion(client, *, model: str, messages: list, temperature: float | None = None, max_tokens: int | None = None, **extra):
@@ -56,6 +55,24 @@ def _create_chat_completion(client, *, model: str, messages: list, temperature: 
     if not is_gpt5_family and temperature is not None:
         params["temperature"] = temperature
     return client.chat.completions.create(**params)
+
+
+def _safe_total_tokens(response) -> int:
+    """Best-effort extraction of token usage from provider responses."""
+
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+
+    if isinstance(usage, dict):
+        return int(usage.get("total_tokens", 0) or 0)
+
+    total_tokens = getattr(usage, "total_tokens", None)
+    if total_tokens is not None:
+        return int(total_tokens)
+
+    # Some providers nest usage fields differently
+    return int(getattr(usage, "get", lambda *_: 0)("total_tokens", 0) or 0)
 
 def construct_fact_decomp_prompt(src_lang, paragraph: str):
     if src_lang == 'en':
@@ -133,7 +150,7 @@ def ask_gpt_for_facts(client, model_name: str, paragraph: str, lang_code: str):
     response_content = response.choices[0].message.content
     # logger.info(f"GPT Response: {response_content}")
 
-    return response_content, response.usage.total_tokens
+    return response_content, _safe_total_tokens(response)
 
 def construct_fact_intersection_prompt(src_lang: str, tgt_lang_code: str, src_fact_context: List[str], 
                                        tgt_fact_context: List[str], person_name: str):
@@ -242,7 +259,7 @@ def ask_gpt_about_fact_intersection(client, model_name, cache,
     # Check if the input prompt is in the cache
     if input_prompt not in cache:
         message = [{"role": "user", "content": input_prompt}]
-        
+
         assert model_name in ['gpt4v', 'gpt-4', 'gpt-4o', 'gpt-5', 'gpt-5-mini', 'gpt-3.5-turbo-0125'], "Invalid model name"
 
         response = _create_chat_completion(
@@ -254,25 +271,36 @@ def ask_gpt_about_fact_intersection(client, model_name, cache,
         )
 
         response_content = response.choices[0].message.content
-        response_total_tokens = response.usage.total_tokens
+        response_total_tokens = _safe_total_tokens(response)
 
         # Normalize Yes/No responses for Russian and Hebrew
-        response_content = response_content.replace("да", "yes").replace("нет", "no") if src_lang_code == "ru" else response_content
-        response_content = response_content.replace("כן", "yes").replace("לא", "no") if src_lang_code == "he" else response_content
+        if src_lang_code == "ru":
+            response_content = response_content.replace("да", "yes").replace("нет", "no")
+        elif src_lang_code == "he":
+            response_content = response_content.replace("כן", "yes").replace("לא", "no")
 
         cache[input_prompt] = response_content
         return input_prompt, response_content, response_total_tokens
-    
+
     return input_prompt, cache[input_prompt], 0
 
 def ask_gpt_if_premise_entails_hypothesis(premise: str, hypothesis: str):
-    message=[{"role": "user", "content": f"Please determine if the following premise entails the following hypothesis. Return either 'entails', 'contradicts', or 'neither'.\n Premise: {premise}\n Hypothesis: {hypothesis}"}]
-    response = openai.ChatCompletion.create(
+    message = [{
+        "role": "user",
+        "content": (
+            "Please determine if the following premise entails the following hypothesis. "
+            "Return either 'entails', 'contradicts', or 'neither'.\n"
+            f" Premise: {premise}\n Hypothesis: {hypothesis}"
+        ),
+    }]
+    client = load_tsvetshop_client()
+    return _create_chat_completion(
+        client,
         model="gpt-5-mini",
         max_tokens=len(premise) + len(hypothesis) + 1000,
         temperature=0.8,
-    messages = message)
-    return response
+        messages=message,
+    )
 
 def ask_gpt_about_caa_classification(client, content: str, person_name: str ):
     # "{text}. Is the sentiment towards {word} in the given sentence positive, neutral or negative?"
@@ -329,6 +357,6 @@ def prompt_gpt_4(client, valid_labels: List[str], prompt) -> Tuple[str, int]:
     response_content = response.choices[0].message.content
     if response_content not in valid_labels:
         logger.warning(f"Invalid response from GPT-4: [[{response_content}]] for prompt:\n\n {prompt}")
-    response_total_tokens = response.usage.total_tokens
+    response_total_tokens = _safe_total_tokens(response)
     return response_content, response_total_tokens
 

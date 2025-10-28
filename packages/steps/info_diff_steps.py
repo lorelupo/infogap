@@ -6,7 +6,6 @@ from nltk import sent_tokenize
 import json
 from openai import BadRequestError, OpenAI
 import pandas as pd
-import openai
 from nltk import sent_tokenize
 from torch.cuda import OutOfMemoryError
 import ipdb
@@ -22,16 +21,15 @@ from sentence_transformers import SentenceTransformer
 from dotenv import dotenv_values
 
 from packages.constants import LGBT_EN_WORDS, LGBT_FR_WORDS, TARGET_LANGUAGES, HF_CACHE_DIR, GPT_CACHE_LOCATION, NUM_CONTEXT_SRC, NUM_RETRIEVALS, NUM_CONTEXT_TGT, FACT_DECOMP_FLAN_SAVE_DIR, BIO_SAVE_DIR,\
-    CONNOTATION_FLAN_SAVE_DIR, MT5_INFO_GAP_MODEL_PATH, MT5_FACT_DECOMP_MODEL_PATH
+    CONNOTATION_FLAN_SAVE_DIR, MT5_INFO_GAP_MODEL_PATH, MT5_FACT_DECOMP_MODEL_PATH, LANG_MAPPINGS, ASK_GPT_FACT_INTERSECTION_PROMPTS, get_labse_model
 from packages.align_paragraphs import compute_algn_strngths, FactParagraph, prune_directional_alignments, union_forced_alignment, union_pruned_alignment
 from packages.align_facts import align_facts
-from packages.gpt_query import ask_gpt_for_facts, FactParagraph, ask_gpt_about_fact_intersection
+from packages.gpt_query import ask_gpt_for_facts, FactParagraph, ask_gpt_about_fact_intersection, format_fact_context
 from packages.flan_query import generate_facts_flan, ask_flan_about_fact_intersection, generate_facts_mt5, ask_mt5_about_fact_intersection
 from packages.align_facts import pairwise_fact_fact_margin_compute, obtain_hubness_measure
 
 
 logger = loguru.logger
-config = dotenv_values(".env")
 today = datetime.date.today()
 logger.add(f"logs/info_diff_{today}.log", rotation="500 MB")
 
@@ -185,45 +183,56 @@ def write_gpt_fact_cache(person_name, lang_code, fact_cache):
 #     client = OpenAI(api_key=key)  # TODO: put this in an env instead.
 #     return client
 
+def _get_env_setting(config_map: Dict[str, str], key: str) -> Optional[str]:
+    """Lookup helper that prefers real environment variables over .env values."""
+
+    return os.getenv(key) or config_map.get(key)
+
+
 def load_other_client():
     """Return an LLM client configured from environment settings.
 
     Preference order:
-    1. OpenRouter (``OPENROUTER_KEY`` and ``OPENROUTER_URL``).
+    1. OpenRouter (``OPENROUTER_KEY``/``OPENROUTER_API_KEY`` with optional ``OPENROUTER_URL``).
     2. Legacy ``THE_KEY`` value.
     3. Explicit OpenAI settings (``OPENAI_API_KEY`` and optional ``OPENAI_BASE_URL``).
 
     If using OpenAI and no base URL is provided, default to https://api.openai.com/v1.
     """
 
-    config = dotenv_values(".env")
+    env_config = dotenv_values(".env")
 
-    # OpenRouter first if both present
-    openrouter_key = config.get("OPENROUTER_KEY")
-    openrouter_url = config.get("OPENROUTER_URL")
-    if openrouter_key and openrouter_url:
+    def lookup(name: str) -> Optional[str]:
+        return _get_env_setting(env_config, name)
+
+    openrouter_key = lookup("OPENROUTER_KEY") or lookup("OPENROUTER_API_KEY")
+    openrouter_url = lookup("OPENROUTER_URL") or lookup("OPENROUTER_BASE_URL")
+
+    if openrouter_key:
+        base_url = openrouter_url or "https://openrouter.ai/api/v1"
         default_headers = {
-            "HTTP-Referer": config.get("OPENROUTER_REFERER", "https://infogap"),
-            "X-Title": config.get("OPENROUTER_APP_NAME", "InfoGap Pipeline"),
+            "HTTP-Referer": lookup("OPENROUTER_REFERER") or "https://infogap",
+            "X-Title": lookup("OPENROUTER_APP_NAME") or "InfoGap Pipeline",
         }
         logger.info(
-            f"LLM client initialized: provider=OpenRouter, key_source=OPENROUTER_KEY, base_url={openrouter_url}"
+            "LLM client initialized: provider=OpenRouter, base_url={}", base_url
         )
         return OpenAI(
             api_key=openrouter_key,
-            base_url=openrouter_url,
+            base_url=base_url,
             default_headers=default_headers,
         )
 
-    # Legacy key takes priority when present
-    api_key = config.get("THE_KEY") or config.get("OPENAI_API_KEY")
+    api_key = lookup("THE_KEY") or lookup("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("Missing THE_KEY or OPENAI_API_KEY in .env file")
+        raise ValueError("Missing OpenAI-compatible API key in environment (.env)")
 
-    base_url = config.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
-    key_source = "THE_KEY" if config.get("THE_KEY") else "OPENAI_API_KEY"
+    base_url = lookup("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    key_source = "THE_KEY" if lookup("THE_KEY") else "OPENAI_API_KEY"
     logger.info(
-        f"LLM client initialized: provider=OpenAI-compatible, key_source={key_source}, base_url={base_url}"
+        "LLM client initialized: provider=OpenAI-compatible, key_source={}, base_url={}",
+        key_source,
+        base_url,
     )
     return OpenAI(api_key=api_key, base_url=base_url)
 
@@ -295,54 +304,130 @@ def step_generate_facts(content_blocks: List[object],
                         lang_code: str,
                         person_name: str,
                         model_name: str = 'gpt-5-mini',
+                        use_batch: bool = False,
+                        batch_poll_interval: int = 30,
+                        batch_timeout: int = 3600,
                         **kwargs) -> List[List[str]]:
-    # TODO: need to update this to filter out headers.
+    """Generate facts for each paragraph using GPT with optional batch support."""
     logger.info(
-        f"step_generate_facts: model={model_name}, lang={lang_code}, person={person_name}"
+        f"step_generate_facts: model={model_name}, lang={lang_code}, person={person_name}, use_batch={use_batch}"
     )
-    all_facts = []
-    paragraphs =  [block["paragraph"] for block in content_blocks if "paragraph" in block]
-    # client = load_tsvetshop_client() 
+    # Support both old Paragraph objects and new dict-based blocks
+    paragraphs = []
+    for block in content_blocks:
+        if isinstance(block, dict) and "paragraph" in block:
+            paragraphs.append(block["paragraph"])
+        elif hasattr(block, 'clean_text'):
+            paragraphs.append(block.clean_text)
+    
     client = load_other_client()
     ask_for_facts = partial(ask_gpt_for_facts, client, model_name)
     fact_cache = check_gpt_fact_cache(person_name, lang_code)
-    total_num_tokens = 0
-    for paragraph in tqdm(paragraphs):
-        if paragraph in fact_cache :
-            all_facts.append(FactParagraph(fact_cache[paragraph]))
-            continue
-        else:
-            try:
-                response, num_tokens = ask_for_facts(paragraph, lang_code)
-            except BadRequestError as e:
-                sentences = sent_tokenize(paragraph)
-                # get the error message from the exception
-                error_message = e.args[0]
-                logger.error(f"Content warning from openai for paragraph: {paragraph}. The error message is: {error_message}. Used sentence tokenization instead; there are {len(sentences)} sentences.")
-                all_facts.append(FactParagraph(sentences))
-                continue
-            try:
-                fact_str = extract_fact_decomp_list(response) 
-                fact_list = list(eval(fact_str))
-                # NOTE: this if the prompt is changed, the cache will *not* be updated. something to keep in mind.
-                fact_cache[paragraph] = fact_list
-                all_facts.append(FactParagraph(fact_list))
-            except:
-                # ipdb.set_trace()
-                sentences = sent_tokenize(paragraph)
-                logger.warning(f"Could not parse facts from paragraph: {paragraph}. Used sentence tokenization instead; there are {len(sentences)} sentences.")
-                all_facts.append(FactParagraph(sentences))
-            # except:
-            #     logger.error(f"Could not parse facts from paragraph: {paragraph}")
-            #     raise ValueError(f"Could not parse facts from paragraph: {paragraph}")
 
+    total_num_tokens = 0
+    total_paragraphs = len(paragraphs)
+    fact_results: List[Optional[FactParagraph]] = [None] * total_paragraphs
+    missing_indices: List[int] = []
+    missing_paragraphs: List[str] = []
+
+    progress = tqdm(total=total_paragraphs)
+
+    for idx, paragraph in enumerate(paragraphs):
+        cached_facts = fact_cache.get(paragraph)
+        if cached_facts is not None:
+            fact_results[idx] = FactParagraph(cached_facts)
+            progress.update(1)
+        else:
+            missing_indices.append(idx)
+            missing_paragraphs.append(paragraph)
+
+    batch_fail_indices: List[int] = []
+    if use_batch and missing_paragraphs:
+        try:
+            from packages.batch_gpt_query import batch_ask_gpt_for_facts
+
+            batch_responses, batch_tokens, _ = batch_ask_gpt_for_facts(
+                client,
+                model_name,
+                missing_paragraphs,
+                lang_code,
+                person_name=person_name,
+                wait_for_completion=True,
+                poll_interval=batch_poll_interval,
+                timeout=batch_timeout,
+            )
+            total_num_tokens += batch_tokens
+
+            for local_idx, response in enumerate(batch_responses):
+                global_idx = missing_indices[local_idx]
+                paragraph = paragraphs[global_idx]
+                if not response:
+                    batch_fail_indices.append(global_idx)
+                    continue
+
+                try:
+                    fact_str = extract_fact_decomp_list(response)
+                    fact_list = list(eval(fact_str))
+                    fact_cache[paragraph] = fact_list
+                    fact_results[global_idx] = FactParagraph(fact_list)
+                except Exception:
+                    logger.warning(
+                        f"Batch parsing failed for paragraph index {global_idx}; falling back to sync."
+                    )
+                    batch_fail_indices.append(global_idx)
+                    continue
+
+                progress.update(1)
+
+            processed_indices = {missing_indices[i] for i in range(len(batch_responses))}
+            remaining_after_batch = [idx for idx in missing_indices if idx not in processed_indices]
+            batch_fail_indices.extend(remaining_after_batch)
+        except Exception as batch_error:
+            logger.exception(
+                f"Batch fact extraction failed for {person_name} ({lang_code}); reverting to synchronous calls."
+            )
+            batch_fail_indices = missing_indices.copy()
+
+    else:
+        batch_fail_indices = missing_indices.copy()
+
+    for global_idx in batch_fail_indices:
+        paragraph = paragraphs[global_idx]
+        try:
+            response, num_tokens = ask_for_facts(paragraph, lang_code)
             total_num_tokens += num_tokens
-    assert len(all_facts) == len(paragraphs)
-    # log the number of tokens required to generate the facts for the person
+            fact_str = extract_fact_decomp_list(response)
+            fact_list = list(eval(fact_str))
+            fact_cache[paragraph] = fact_list
+            fact_results[global_idx] = FactParagraph(fact_list)
+        except BadRequestError as e:
+            sentences = sent_tokenize(paragraph)
+            error_message = e.args[0]
+            logger.error(
+                f"Content warning from provider for paragraph index {global_idx}: {error_message}. Using sentence tokenization fallback ({len(sentences)} sentences)."
+            )
+            fact_results[global_idx] = FactParagraph(sentences)
+        except Exception:
+            sentences = sent_tokenize(paragraph)
+            logger.warning(
+                f"Could not parse facts from paragraph index {global_idx}; using sentence tokenization ({len(sentences)} sentences)."
+            )
+            fact_results[global_idx] = FactParagraph(sentences)
+
+        progress.update(1)
+
+    progress.close()
+
+    for idx, facts in enumerate(fact_results):
+        if facts is None:
+            sentences = sent_tokenize(paragraphs[idx])
+            fact_results[idx] = FactParagraph(sentences)
+
     write_gpt_fact_cache(person_name, lang_code, fact_cache)
-    logger.info(f"Total number of tokens required to generate the facts for {person_name} in {lang_code}: {total_num_tokens}")
-    # write the fact cache to a file
-    return all_facts
+    logger.info(
+        f"Total tokens for fact generation ({person_name}, {lang_code}, model={model_name}): {total_num_tokens}"
+    )
+    return fact_results
 
 
 def _get_non_current_paragraph_facts(paragraph_index, all_facts: List[FactParagraph]):
@@ -390,7 +475,7 @@ def step_get_tgt_retrieval_candidates(all_en_fact_blocks: List[FactParagraph],
             all_top_k_facts.append(top_k_facts)
         return all_top_k_facts
     
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+    model = SentenceTransformer(get_labse_model())
     def get_tgt_contexts(src_query_df, src_fact_blocks, tgt_fact_blocks):
         all_src_facts  = [fact for fact_paragraph in src_fact_blocks for fact in fact_paragraph.facts]
         all_tgt_facts = [fact for fact_paragraph in tgt_fact_blocks for fact in fact_paragraph.facts]
@@ -463,7 +548,7 @@ def step_obtain_paragraphs_associations(step_name: str, version: str,
                                **kwargs) -> Tuple[np.array, np.array]:
     # create two polars dataframes, one for the english facts and one for the french facts
     # the columns should be 'fact' and 'paragraph_index'
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+    model = SentenceTransformer(get_labse_model())
     en_fact_df = _create_fact_df(en_facts)
     fr_fact_df = _create_fact_df(fr_facts)
     # add the sentence embedding column, called 'fact_embed'
@@ -487,7 +572,7 @@ def step_obtain_en_zh_paragraphs_associations(step_name: str, version: str,
                                **kwargs) -> Tuple[np.array, np.array]:
     # create two polars dataframes, one for the english facts and one for the chinese facts
     # the columns should be 'fact' and 'paragraph_index'
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+    model = SentenceTransformer(get_labse_model())
     en_fact_df = _create_fact_df(en_facts)
     zh_fact_df = _create_fact_df(zh_facts)
     # add the sentence embedding column, called 'fact_embed'
@@ -510,7 +595,7 @@ def step_obtain_en_ru_paragraphs_associations(step_name: str, version: str,
                                **kwargs) -> Tuple[np.array, np.array]:
     # create two polars dataframes, one for the english facts and one for the french facts
     # the columns should be 'fact' and 'paragraph_index'
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+    model = SentenceTransformer(get_labse_model())
     en_fact_df = _create_fact_df(en_facts)
     ru_fact_df = _create_fact_df(ru_facts)
     # add the sentence embedding column, called 'fact_embed'
@@ -548,7 +633,7 @@ def step_obtain_en_tgt_paragraphs_associations(
     Returns:
         Tuple[np.array, np.array]: Alignment strength arrays.
     """
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR) 
+    model = SentenceTransformer(get_labse_model()) 
     en_fact_df = _create_fact_df(en_facts)
     tgt_fact_df = _create_fact_df(tgt_facts)
     
@@ -648,7 +733,7 @@ def step_retrieve_potential_matches( en_bio_id: str, fr_bio_id: str,
         in the aligned paragraph
     """
     # we can use the same decision rule as the one used in the alignment pruning step for paragraphs.
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+    model = SentenceTransformer(get_labse_model())
     en_fact_df = _create_fact_df(en_facts)
     fr_fact_df = _create_fact_df(fr_facts)
     # add an index column to the fact dataframes
@@ -711,7 +796,7 @@ def step_retrieve_potential_matches( en_bio_id: str, fr_bio_id: str,
 #         in the aligned paragraph
 #     """
 #     # we can use the same decision rule as the one used in the alignment pruning step for paragraphs.
-#     model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+#     model = SentenceTransformer(get_labse_model())
 #     en_fact_df = _create_fact_df(en_facts)
 #     tgt_fact_df = _create_fact_df(tgt_facts)
 #     # add an index column to the fact dataframes
@@ -767,7 +852,7 @@ def step_retrieve_potential_matches_en_tgt(en_bio_id: str, tgt_bio_id: str,
         in the aligned paragraph
     """
     # Use the same decision rule as the one used in the alignment pruning step for paragraphs.
-    model = SentenceTransformer('sentence-transformers/LaBSE', cache_folder=HF_CACHE_DIR)
+    model = SentenceTransformer(get_labse_model())
     en_fact_df = _create_fact_df(en_facts)
     tgt_fact_df = _create_fact_df(tgt_facts)
 
@@ -833,86 +918,230 @@ def step_compute_info_gap_reasoning(info_gap_retrieval_dfs: Tuple[pd.DataFrame, 
                                     person_name: str, 
                                     tgt_person_name: str,
                                     model_name: str,
+                                    use_batch: bool = False,
+                                    batch_poll_interval: int = 30,
+                                    batch_timeout: int = 3600,
                                     **kwargs):
-    # TODO: we can adapt this to load the lang code if it's in there.
-    if 'lang_code' in kwargs:
-        lang_code = kwargs['lang_code']
-    else:
-        lang_code = 'fr'
+    lang_code = kwargs.get('lang_code', 'fr')
     logger.info(
-        f"step_compute_info_gap_reasoning: model={model_name}, src=en, tgt={lang_code}, person={person_name}, tgt_person={tgt_person_name}"
+        f"step_compute_info_gap_reasoning: model={model_name}, src=en, tgt={lang_code}, person={person_name}, tgt_person={tgt_person_name}, use_batch={use_batch}"
     )
     en_info_gap_df, tgt_info_gap_df, alignment_df = info_gap_retrieval_dfs
     en_info_gap_df = pl.from_pandas(en_info_gap_df) if isinstance(en_info_gap_df, pd.DataFrame) else en_info_gap_df
     tgt_info_gap_df = pl.from_pandas(tgt_info_gap_df) if isinstance(tgt_info_gap_df, pd.DataFrame) else tgt_info_gap_df
 
     assert len(en_info_gap_df['person_name'].unique()) == 1
-    # client = load_tsvetshop_client()
+
     client = load_other_client()
     en_fact_intersection_cache = check_gpt_fact_intersection_cache(model_name, person_name, 'en')
-    tgt_fact_intersection_cache = check_gpt_fact_intersection_cache(model_name, person_name, lang_code) 
+    tgt_fact_intersection_cache = check_gpt_fact_intersection_cache(model_name, person_name, lang_code)
     ask_about_intersection = partial(ask_gpt_about_fact_intersection, client, model_name)
 
     progress = tqdm(total=len(tgt_info_gap_df) + len(en_info_gap_df))
-    full_info_gap_num_tokens = {'en': 0, lang_code: 0} 
-    def annotate_llm(cache, src_lang, tgt_lang, person_name: str, src_info_gap_df: pl.DataFrame, tgt_info_gap_df: pl.DataFrame, 
-                     paragraph_index,  info_intersection_mapping, fact_index):
-        src_paragraph_index = paragraph_index
-        src_fact_context = src_info_gap_df.filter((pl.col('paragraph_index') == src_paragraph_index) & (pl.col('fact_index') <= fact_index))['fact'].to_list()[-NUM_CONTEXT_SRC:]
-        tgt_contexts = []
-        for tgt_index, margin in list(sorted(info_intersection_mapping, key=lambda x: x[1], reverse=True))[:NUM_RETRIEVALS]:
-            # print(tgt_index, margin)
+    token_totals = {'en': 0, lang_code: 0}
+
+    def build_prompt(src_lang: str, tgt_lang: str, src_context: List[str], tgt_contexts: List[List[str]]) -> str:
+        tgt_language_name = LANG_MAPPINGS.get(src_lang, {}).get(tgt_lang, tgt_lang)
+        formatted_src = format_fact_context(src_context, src_lang)
+        formatted_tgt = format_fact_context(tgt_contexts[0], tgt_lang) if tgt_contexts else ""
+        display_name = person_name if src_lang == 'en' else tgt_person_name
+        return ASK_GPT_FACT_INTERSECTION_PROMPTS[src_lang].format(
+            person_name=display_name,
+            tgt_person_name=tgt_person_name,
+            src_fact_context=formatted_src,
+            tgt_fact_context=formatted_tgt,
+            tgt_language=tgt_language_name,
+        )
+
+    def prepare_tasks(src_df: pl.DataFrame,
+                      tgt_df: pl.DataFrame,
+                      src_lang: str,
+                      tgt_lang: str,
+                      cache: Dict[str, str]) -> Tuple[List[Dict], Dict[Tuple[int, int], str], Dict[str, Dict]]:
+        tasks: List[Dict] = []
+        labels: Dict[Tuple[int, int], str] = {}
+        id_lookup: Dict[str, Dict] = {}
+        for row in src_df.iter_rows(named=True):
+            paragraph_index = row['paragraph_index']
+            fact_index = row['fact_index']
+            retrieval_mapping = row.get('info_retrieval_mapping') or []
+            if not retrieval_mapping:
+                labels[(paragraph_index, fact_index)] = '[]'
+                progress.update(1)
+                continue
+
+            top_candidate = sorted(retrieval_mapping, key=lambda x: x[1], reverse=True)[0]
+            tgt_fact_index = top_candidate[0]
             try:
-                tgt_paragraph_index = tgt_info_gap_df.filter(pl.col('fact_index') == tgt_index)['paragraph_index'].to_list()[0]
+                tgt_paragraph_index = tgt_df.filter(pl.col('fact_index') == tgt_fact_index)['paragraph_index'].to_list()[0]
             except IndexError:
-                ipdb.set_trace()
-            tgt_context = tgt_info_gap_df.filter((pl.col('paragraph_index') == tgt_paragraph_index) & (pl.col('fact_index') <= tgt_index))['fact'].to_list()[-NUM_CONTEXT_TGT:]
-            tgt_contexts.append(tgt_context)
+                logger.warning(
+                    f"Target paragraph missing for fact_index={tgt_fact_index} ({src_lang}->{tgt_lang}); skipping."
+                )
+                labels[(paragraph_index, fact_index)] = '[]'
+                progress.update(1)
+                continue
+
+            src_context = src_df.filter(
+                (pl.col('paragraph_index') == paragraph_index) & (pl.col('fact_index') <= fact_index)
+            )['fact'].to_list()[-NUM_CONTEXT_SRC:]
+            tgt_context = tgt_df.filter(
+                (pl.col('paragraph_index') == tgt_paragraph_index) & (pl.col('fact_index') <= tgt_fact_index)
+            )['fact'].to_list()[-NUM_CONTEXT_TGT:]
+
+            if not src_context or not tgt_context:
+                labels[(paragraph_index, fact_index)] = '[]'
+                progress.update(1)
+                continue
+
+            tgt_contexts = [tgt_context]
+            prompt = build_prompt(src_lang, tgt_lang, src_context, tgt_contexts)
+            cached_value = cache.get(prompt)
+            if cached_value is not None:
+                labels[(paragraph_index, fact_index)] = cached_value
+                progress.update(1)
+                continue
+
+            fact_id = f"{person_name}_{src_lang}_{paragraph_index}_{fact_index}"
+            task = {
+                'fact_id': fact_id,
+                'paragraph_index': paragraph_index,
+                'fact_index': fact_index,
+                'src_context': src_context,
+                'tgt_contexts': tgt_contexts,
+                'cache_key': prompt,
+                'src_lang': src_lang,
+                'tgt_lang': tgt_lang,
+            }
+            tasks.append(task)
+            id_lookup[fact_id] = task
+        return tasks, labels, id_lookup
+
+    def annotate_direction(src_df: pl.DataFrame,
+                           tgt_df: pl.DataFrame,
+                           src_lang: str,
+                           tgt_lang: str,
+                           cache: Dict[str, str]) -> Dict[Tuple[int, int], str]:
+        tasks, labels, id_lookup = prepare_tasks(src_df, tgt_df, src_lang, tgt_lang, cache)
+
+        if use_batch and tasks:
             try:
-                input_prompt, response, num_tokens = ask_about_intersection(cache, src_lang, tgt_lang, src_fact_context, tgt_contexts, person_name, tgt_person_name)
-                total_num_tokens = num_tokens
-                full_info_gap_num_tokens[src_lang] += total_num_tokens
-                if num_tokens == 0:
-                    if input_prompt in cache:
-                        #logger.info(f"Cache hit with input prompt: {input_prompt}")
-                        pass
-                gpt_intersection_labels = response
-                # logger.info(f"Intersection labels: {gpt_intersection_labels}")
-                # log the number of tokens required to validate intersection labels for the person
-                # logger.info(f"{total_num_tokens}")
-                progress.update(1)
-                return str(gpt_intersection_labels)
+                from packages.batch_gpt_query import BatchGPTQuery
+
+                batch_manager = BatchGPTQuery(client)
+                fact_pairs = [(task['fact_id'], task['src_context'], task['tgt_contexts']) for task in tasks]
+                requests = batch_manager.create_intersection_labeling_batch(
+                    fact_pairs,
+                    src_lang_code=src_lang,
+                    tgt_lang_code=tgt_lang,
+                    model_name=model_name,
+                    person_name=person_name,
+                    tgt_person_name=tgt_person_name,
+                )
+
+                if requests:
+                    batch_job = batch_manager.submit_batch(
+                        requests=requests,
+                        description=f"intersection {person_name} {src_lang}->{tgt_lang}",
+                        metadata={'person_name': person_name, 'src_lang': src_lang, 'tgt_lang': tgt_lang},
+                    )
+                    batch_job = batch_manager.wait_for_batch(
+                        batch_job,
+                        poll_interval=batch_poll_interval,
+                        timeout=batch_timeout,
+                    )
+                    results = batch_manager.retrieve_batch_results(batch_job)
+                    labels_map, batch_tokens = batch_manager.process_intersection_results(
+                        results,
+                        fact_pairs,
+                        src_lang_code=src_lang,
+                    )
+                    token_totals[src_lang] += batch_tokens
+
+                    for fact_id, response in labels_map.items():
+                        task = id_lookup.get(fact_id)
+                        if not task:
+                            continue
+                        if response and response != 'error':
+                            response_text = str(response)
+                            labels[(task['paragraph_index'], task['fact_index'])] = response_text
+                            cache[task['cache_key']] = response_text
+                            task['processed'] = True
+                            progress.update(1)
+                        else:
+                            task['processed'] = False
+                else:
+                    for task in tasks:
+                        task['processed'] = False
+            except Exception as batch_exc:
+                logger.exception(
+                    f"Batch intersection labeling failed for {person_name} ({src_lang}->{tgt_lang}); falling back to synchronous calls."
+                )
+                for task in tasks:
+                    task['processed'] = False
+        else:
+            for task in tasks:
+                task['processed'] = False
+
+        for task in tasks:
+            if task.get('processed'):
+                continue
+            try:
+                input_prompt, response, num_tokens = ask_about_intersection(
+                    cache,
+                    src_lang,
+                    tgt_lang,
+                    task['src_context'],
+                    task['tgt_contexts'],
+                    person_name,
+                    tgt_person_name,
+                )
+                token_totals[src_lang] += num_tokens
+                response_text = str(response)
+                labels[(task['paragraph_index'], task['fact_index'])] = response_text
             except BadRequestError:
-                ipdb.set_trace()
-                progress.update(1)
-                logger.warning(f"Content warning for src_fact_context: {src_fact_context} and tgt_contexts: {tgt_contexts}.")
-                return 'failed due to content policy'
-    annotation_fn = partial(annotate_llm, tgt_fact_intersection_cache, lang_code, 'en', tgt_info_gap_df['person_name'][0], tgt_info_gap_df, en_info_gap_df)
-    
+                logger.warning(
+                    f"Content warning during intersection labeling ({src_lang}->{tgt_lang}) for paragraph={task['paragraph_index']}, fact={task['fact_index']}"
+                )
+                labels[(task['paragraph_index'], task['fact_index'])] = 'failed due to content policy'
+            except Exception:
+                logger.exception(
+                    f"Unexpected error during intersection fallback ({src_lang}->{tgt_lang}) for paragraph={task['paragraph_index']}, fact={task['fact_index']}"
+                )
+                labels[(task['paragraph_index'], task['fact_index'])] = 'error'
+            progress.update(1)
+
+        return labels
+
+    tgt_labels = annotate_direction(tgt_info_gap_df, en_info_gap_df, lang_code, 'en', tgt_fact_intersection_cache)
+    en_labels = annotate_direction(en_info_gap_df, tgt_info_gap_df, 'en', lang_code, en_fact_intersection_cache)
+
+    progress.close()
+
+    def lookup_label(label_map: Dict[Tuple[int, int], str], paragraph_index: int, fact_index: int) -> str:
+        return str(label_map.get((paragraph_index, fact_index), '[]'))
+
     tgt_info_gap_df = tgt_info_gap_df.with_columns([
-        pl.struct(['paragraph_index', 'fact_index', 'info_retrieval_mapping']).\
-            map_elements(lambda row: annotation_fn(row['paragraph_index'], row['info_retrieval_mapping'], row['fact_index'])).\
-                alias(f'gpt-4o_intersection_label')
-    ]).with_columns([
+        pl.struct(['paragraph_index', 'fact_index']).map_elements(
+            lambda row: lookup_label(tgt_labels, row['paragraph_index'], row['fact_index'])
+        ).alias('gpt-4o_intersection_label'),
         pl.lit(tgt_person_name).alias(f'{lang_code}_person_name')
     ])
-    logger.info(f"Total number of tokens required to validate intersection labels for {person_name} in {lang_code}: {full_info_gap_num_tokens[lang_code]}")
-    annotation_fn = partial(annotate_llm, en_fact_intersection_cache, 'en', lang_code, en_info_gap_df['person_name'][0], en_info_gap_df, tgt_info_gap_df)
-    
-    logger.debug(f"tgt_info_gap_df Schema: {tgt_info_gap_df.schema}")
-    logger.debug(f"tgt_info_gap_df Head:\n{tgt_info_gap_df.head(5)}")
-    logger.debug(f"en_info_gap_df Schema: {en_info_gap_df.schema}")
-    logger.debug(f"en_info_gap_df Head:\n{en_info_gap_df.head(5)}")
-    
+
     en_info_gap_df = en_info_gap_df.with_columns([
-        pl.struct(['paragraph_index', 'fact_index',  'info_retrieval_mapping']).\
-            map_elements(lambda row: annotation_fn(row['paragraph_index'], row['info_retrieval_mapping'], row['fact_index'])).\
-                alias(f'gpt-4o_intersection_label')
-    ]).with_columns([
+        pl.struct(['paragraph_index', 'fact_index']).map_elements(
+            lambda row: lookup_label(en_labels, row['paragraph_index'], row['fact_index'])
+        ).alias('gpt-4o_intersection_label'),
         pl.lit(tgt_person_name).alias(f'{lang_code}_person_name')
     ])
-    logger.info(f"Total number of tokens required to validate intersection labels for {person_name} in en: {full_info_gap_num_tokens['en']}")
-    # write the fact intersection cache to a file
+
+    logger.info(
+        f"Total number of tokens required to validate intersection labels for {person_name} in {lang_code}: {token_totals[lang_code]}"
+    )
+    logger.info(
+        f"Total number of tokens required to validate intersection labels for {person_name} in en: {token_totals['en']}"
+    )
+
     write_gpt_fact_intersection_cache(model_name, person_name, 'en', en_fact_intersection_cache)
     write_gpt_fact_intersection_cache(model_name, person_name, lang_code, tgt_fact_intersection_cache)
     return en_info_gap_df, tgt_info_gap_df, alignment_df
