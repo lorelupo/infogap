@@ -55,8 +55,8 @@ N_SAMPLE=510
 MODEL="gpt-5-mini"
 INFOGAP_DIR="/home/Lupo/infogap"
 INPUT_DATA_DIR="/data/wikimt"
-TREATMENT_GROUP_FILE="treatment_group_rebalanced_after_sent_div_4B_d30.csv"
-CONTROL_GROUP_FILE="control_group_rebalanced_after_sent_div_4B_d30.csv"
+TREATMENT_GROUP_FILE="treatment_group_rebalanced_after_sent_div_06B_d30.csv"
+CONTROL_GROUP_FILE="control_group_rebalanced_after_sent_div_06B_d30.csv"
 
 # Which steps to run: "all", "step2", or "step1"
 # - "all": Run preprocessing (step 1) and pipeline (step 2)
