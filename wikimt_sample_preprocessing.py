@@ -8,15 +8,21 @@ cleans Wikipedia text, and generates the necessary configuration files for the I
 # --------------------------------------------------------------------------- #
 # Imports
 # --------------------------------------------------------------------------- #
-
+# compatibility shim for legacy imports expecting flowmason.flowmason
+try:
+    import sys, importlib, flowmason
+    sys.modules['flowmason.flowmason'] = flowmason
+    if "flowmason" in sys.modules:
+        importlib.reload(sys.modules["flowmason"])
+except Exception:
+    print(f"Warning: flowmason import shim failed: {e}")
+    pass
 import os
-import sys
 import argparse
 import pandas as pd
 import pickle
 import ijson
 import dill
-import importlib
 import re
 import json
 from pathlib import Path
@@ -147,7 +153,7 @@ def get_nlp_uk():
 def load_auxiliary_sections(input_data_dir):
     """Load auxiliary section headers for different languages."""
     headers_dir = os.path.join(input_data_dir, "llm_header")
-    langs = ['en', 'fr', 'zh', 'ru']
+    langs = ['en', 'fr', 'zh', 'ru', "it"]
     
     AUXILIARY_SECTIONS = {}
     for lang in langs:
@@ -365,9 +371,8 @@ def clean_extracts(text, language, AUXILIARY_SECTIONS, LANG_MAP, AUX_PATTERNS, p
 
     return text
 
-
 # --------------------------------------------------------------------------- #
-# Data loading and sampling functions
+# Data loading
 # --------------------------------------------------------------------------- #
 
 def load_treatment_control_groups(input_data_langdir, treatment_group_filename, control_group_filename):
@@ -389,7 +394,48 @@ def load_treatment_control_groups(input_data_langdir, treatment_group_filename, 
     
     return df_treat_group, df_control_group
 
+# --------------------------------------------------------------------------- #
+# Make sure the sample (N_sample) includes only articles whose "country_prediction" belongs to target_language
+# --------------------------------------------------------------------------- #
+LANG_COUNTRY_MAP = {
+    'fr': 'France',
+    'it': 'Italy',
+    'ru': 'Russia',
+    'zh': 'China',
+    'es': 'Spain',
+    'uk': 'Ukraine'
+}
 
+article_path = Path('/data/wikimt/article_df.csv')
+if not article_path.exists():
+    raise FileNotFoundError(f"Missing file: {article_path}")
+
+article_df = pd.read_csv(article_path, dtype={'qid': str, 'lang': str})
+
+def prediction_filter(df_treat_group, df_control_group, target_language, article_df):
+    if target_language not in LANG_COUNTRY_MAP:
+        raise ValueError(f"Unsupported target_language: {target_language}")
+
+    target_country = LANG_COUNTRY_MAP[target_language]
+
+    # 1) Treat group: filter by its own country_prediction
+    if 'country_prediction' not in df_treat_group.columns:
+        raise KeyError("df_treat_group must contain column 'country_prediction'")
+    treat_filtered = df_treat_group[df_treat_group['country_prediction'] == target_country].copy()
+
+    # 2) Control group: load article_df and merge by (qid, targetLanguage)->(qid, lang)
+    merged = df_control_group.merge(
+        article_df[['qid', 'lang', 'country_origin']],
+        left_on=['qid', 'targetLanguage'],
+        right_on=['qid', 'lang'],
+        how='left'
+    )
+    control_filtered = merged[merged["country_origin"] == target_country].copy()
+    return treat_filtered, control_filtered
+    
+# --------------------------------------------------------------------------- #
+# Sample Functions
+# --------------------------------------------------------------------------- #
 def sample_articles(df_treat_group, df_control_group, n_sample, random_seed):
     """
     Sample articles from treatment and control groups.
@@ -737,6 +783,9 @@ def main():
     df_treat_group, df_control_group = load_treatment_control_groups(
         input_data_langdir, args.treatment_group_file, args.control_group_file
     )
+
+    df_treat_group, df_control_group = prediction_filter(
+        df_treat_group, df_control_group, args.tgt_lang, article_df)
     
     df_sampled_treat, df_sampled_treat_ids, df_sampled_control, df_sampled_control_ids = sample_articles(
         df_treat_group, df_control_group, args.n_sample, args.random_seed
