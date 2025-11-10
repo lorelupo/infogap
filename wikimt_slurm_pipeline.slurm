@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=72:00:00
+#SBATCH --time=15-00:00:00
 #SBATCH --error=logs/slurm-%j.log
 #SBATCH --output=logs/slurm-%j.log
 
@@ -76,6 +76,38 @@ echo "  Input Data Directory: $INPUT_DATA_DIR"
 echo "  Treatment Group File: $TREATMENT_GROUP_FILE"
 echo "  Control Group File: $CONTROL_GROUP_FILE"
 echo "=========================================================================="
+
+# --------------------------------------------------------------------------- #
+# Step 0: Update TGT_LANG in constants.py
+# --------------------------------------------------------------------------- #
+
+CONSTANTS_FILE="packages/constants.py"
+
+if [ ! -f "$CONSTANTS_FILE" ]; then
+    echo "ERROR: Cannot find constants.py at $CONSTANTS_FILE"
+    exit 1
+fi
+
+# Backup the original file
+cp "$CONSTANTS_FILE" "${CONSTANTS_FILE}.backup"
+echo "✓ Created backup: ${CONSTANTS_FILE}.backup"
+
+# Update TGT_LANG value using sed
+# This will replace the line "TGT_LANG = 'xx'" with "TGT_LANG = '$TARGET_LANG'"
+sed -i.tmp "s/^TGT_LANG = ['\"]\([^'\"]*\)['\"]$/TGT_LANG = '$TARGET_LANG'/" "$CONSTANTS_FILE"
+rm -f "${CONSTANTS_FILE}.tmp"
+
+# Verify the change
+NEW_TGT_LANG=$(grep "^TGT_LANG = " "$CONSTANTS_FILE" | sed "s/TGT_LANG = ['\"]\\([^'\"]*\\)['\"].*/\\1/")
+
+if [ "$NEW_TGT_LANG" = "$TARGET_LANG" ]; then
+    echo "✓ Successfully updated TGT_LANG to '$TARGET_LANG' in $CONSTANTS_FILE"
+else
+    echo "ERROR: Failed to update TGT_LANG. Current value: $NEW_TGT_LANG"
+    echo "Restoring backup..."
+    mv "${CONSTANTS_FILE}.backup" "$CONSTANTS_FILE"
+    exit 1
+fi
 
 # --------------------------------------------------------------------------- #
 # Step 1: Run preprocessing script
